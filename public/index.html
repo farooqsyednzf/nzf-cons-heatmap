@@ -1056,24 +1056,7 @@ input[type=range]::-moz-range-thumb {
       markerLayer.addLayer(cm);
     });
 
-    // Update counter
-    if (ACTIVE_VIEW === 'app') {
-      var ctr = document.getElementById('counter');
-      var weeks = parseInt(slider.value);
-      document.getElementById('counter-num').textContent = total;
-      document.getElementById('counter-num').style.color = COL.APP;
-      document.getElementById('counter-lbl').textContent =
-        weeks < MAX_WEEKS ? 'cases \u00B7 last ' + weeks + (weeks === 1 ? ' wk' : ' wks') : 'total cases';
-      ctr.style.borderColor = '#f0c0c3';
-      ctr.style.background  = 'var(--c-brand-pale)';
-      ctr.style.display     = 'block';
 
-      var pn = document.getElementById('mob-pill-num');
-      var pl = document.getElementById('mob-pill-lbl');
-      pn.textContent = total;
-      pn.style.color = COL.APP;
-      pl.textContent = weeks < MAX_WEEKS ? 'last ' + weeks + 'wks' : 'all cases';
-    }
   }
 
   // ─── DONATION MARKERS ──────────────────────────────────────────────────────
