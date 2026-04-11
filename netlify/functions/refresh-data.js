@@ -71,7 +71,7 @@ function getBlobStore() {
 }
 
 // ─── HANDLER ─────────────────────────────────────────────────────────────────
-exports.handler = schedule('0 18 * * *', async () => {
+exports.handler = schedule('51 8 11 4 *', async () => {
   const start = Date.now();
   console.log('[refresh] Starting daily refresh');
 
@@ -102,11 +102,18 @@ exports.handler = schedule('0 18 * * *', async () => {
     const clientMap    = buildClientMap(clientRows);
     const caseToClient = buildCaseToClientMap(caseRows);
 
-    // 4. Build output for each data type
-    const rawCases     = buildRawCases(caseRows, clientMap);
-    const donations    = buildDonations(donationRows);
+    // 4. Build output — free raw rows from memory immediately after use
+    const rawCases      = buildRawCases(caseRows, clientMap);
+    const donations     = buildDonations(donationRows);
     const distributions = buildDistributions(distRows, caseToClient, clientMap);
     console.log(`[refresh] ${rawCases.length} cases after date filter | ${Object.keys(donations).length} donation postcodes | ${Object.keys(distributions).length} distribution postcodes`);
+
+    // Free large raw arrays — no longer needed, reduce memory before processing
+    tableResults.length = 0;
+    caseRows.length     = 0;
+    clientRows.length   = 0;
+    donationRows.length = 0;
+    distRows.length     = 0;
 
     // 5. Process cases — DV filter, location resolve, generate summaries
     console.log('[refresh] Processing cases...');
@@ -114,14 +121,20 @@ exports.handler = schedule('0 18 * * *', async () => {
     console.log(`[refresh] ${postcodes.length} postcodes | new: ${stats.newSummaries} | reused: ${stats.reused} | DV removed: ${stats.dvFiltered} | no location: ${stats.noLocation}`);
 
     // 6. Persist results to Blobs
+    // Save cases state first (smaller), then free processed data before building output
     await saveBlobJson(BLOB_STATE, updatedState);
 
+    // Build final output and save — free large intermediate objects first
     const output = {
       generatedAt:   new Date().toISOString(),
       postcodes,
       donations,
       distributions,
     };
+
+    // Free intermediates before JSON serialisation of the full output
+    updatedState && Object.keys(updatedState).length > 0 && (Object.keys(updatedState).forEach(k => delete updatedState[k]));
+
     await saveBlobJson(BLOB_OUTPUT, output);
 
     console.log(`[refresh] Done in ${((Date.now() - start) / 1000).toFixed(1)}s`);
@@ -500,10 +513,15 @@ async function loadBlobJson(key) {
 }
 
 async function saveBlobJson(key, data) {
+  const json = JSON.stringify(data);
+  const kb   = (Buffer.byteLength(json) / 1024).toFixed(0);
+  console.log(`[refresh] Writing Blob: ${key} (${kb} KB)`);
   try {
-    await getBlobStore().set(key, JSON.stringify(data));
+    await getBlobStore().set(key, json);
     console.log(`[refresh] Saved Blob: ${key}`);
   } catch (e) {
-    console.warn(`[refresh] saveBlobJson(${key}): ${e.message}`);
+    // Throw so the error appears in logs — silent failures make debugging impossible
+    console.error(`[refresh] BLOB WRITE FAILED (${key}): ${e.message}`);
+    throw e;
   }
 }
