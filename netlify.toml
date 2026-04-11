@@ -11,6 +11,10 @@
 [build.environment]
   NODE_VERSION = "20"
 
+# ── Global functions config: use Node 20 runtime for all functions ────────────
+[functions]
+  node_bundler = "esbuild"
+
 # ── Scheduled daily refresh (4 am AEST = 18:00 UTC) ─────────────────────────
 [functions."refresh-data"]
   schedule = "0 18 * * *"
