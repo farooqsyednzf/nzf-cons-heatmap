@@ -71,7 +71,7 @@ function getBlobStore() {
 }
 
 // ─── HANDLER ─────────────────────────────────────────────────────────────────
-exports.handler = schedule('51 8 11 4 *', async () => {
+exports.handler = schedule('10 9 11 4 *', async () => {
   const start = Date.now();
   console.log('[refresh] Starting daily refresh');
 
@@ -80,40 +80,35 @@ exports.handler = schedule('51 8 11 4 *', async () => {
     _zohoToken = await refreshZohoToken();
     console.log('[refresh] Zoho access token obtained');
 
-    // 2. Fetch all four Analytics tables, DV notes, and cached state in parallel
-    console.log('[refresh] Fetching all data sources in parallel...');
-    const [tableResults, dvNoteIds, casesState] = await Promise.all([
-      Promise.all([
-        fetchViewRows(VIEW_CASES),
-        fetchViewRows(VIEW_CLIENTS),
-        fetchViewRows(VIEW_DONATIONS).catch(e  => { console.warn('[refresh] Donations table failed:', e.message);      return []; }),
-        fetchViewRows(VIEW_DISTRIBUTIONS).catch(e => { console.warn('[refresh] Distributions table failed:', e.message); return []; }),
-      ]),
+    // 2a. Cases + Clients (manageable size) — load together with DV scan + cache
+    // Donations (230k rows) and Distributions (62k rows) are loaded separately
+    // AFTER cases are processed, so only one large dataset is in memory at a time.
+    console.log('[refresh] Fetching cases, clients, DV notes, cached state...');
+    const [[caseRows, clientRows], dvNoteIds, casesState] = await Promise.all([
+      Promise.all([fetchViewRows(VIEW_CASES), fetchViewRows(VIEW_CLIENTS)]),
       fetchDvCaseIdsFromCrm(),
       loadBlobJson(BLOB_STATE).then(v => v || {}),
     ]);
+    console.log(`[refresh] ${caseRows.length} case rows, ${clientRows.length} client rows | DV flags: ${dvNoteIds.size} | cached: ${Object.keys(casesState).length}`);
 
-    const [caseRows, clientRows, donationRows, distRows] = tableResults;
-    console.log(`[refresh] Fetched: ${caseRows.length} cases, ${clientRows.length} clients, ${donationRows.length} donation rows, ${distRows.length} distribution rows`);
-    console.log(`[refresh] ${dvNoteIds.size} cases flagged via notes DV scan`);
-    console.log(`[refresh] ${Object.keys(casesState).length} cached case states loaded`);
-
-    // 3. Build shared lookups once — reused by cases and distributions
+    // Build shared lookup maps, then free the raw arrays immediately
     const clientMap    = buildClientMap(clientRows);
     const caseToClient = buildCaseToClientMap(caseRows);
+    const rawCases     = buildRawCases(caseRows, clientMap);
+    caseRows.length    = 0;
+    clientRows.length  = 0;
+    console.log(`[refresh] ${rawCases.length} cases after date filter`);
 
-    // 4. Build output — free raw rows from memory immediately after use
-    const rawCases      = buildRawCases(caseRows, clientMap);
-    const donations     = buildDonations(donationRows);
-    const distributions = buildDistributions(distRows, caseToClient, clientMap);
-    console.log(`[refresh] ${rawCases.length} cases after date filter | ${Object.keys(donations).length} donation postcodes | ${Object.keys(distributions).length} distribution postcodes`);
+    // 2b. Donations — 230k rows. Stream-aggregate from raw CSV without building
+    //     a full JS object array. Peak memory: ~50 MB for the CSV text only.
+    console.log('[refresh] Fetching donations (230k rows — stream aggregating)...');
+    const donations = aggregateDonationsFromCsv(await fetchViewCsv(VIEW_DONATIONS));
+    console.log(`[refresh] ${Object.keys(donations).length} donation postcodes`);
 
-    // Free large raw arrays — no longer needed, reduce memory before processing
-    tableResults.length = 0;
-    caseRows.length     = 0;
-    clientRows.length   = 0;
-    donationRows.length = 0;
-    distRows.length     = 0;
+    // 2c. Distributions — 62k rows. Same stream approach.
+    console.log('[refresh] Fetching distributions (62k rows — stream aggregating)...');
+    const distributions = aggregateDistributionsFromCsv(await fetchViewCsv(VIEW_DISTRIBUTIONS), caseToClient, clientMap);
+    console.log(`[refresh] ${Object.keys(distributions).length} distribution postcodes`);
 
     // 5. Process cases — DV filter, location resolve, generate summaries
     console.log('[refresh] Processing cases...');
@@ -192,6 +187,111 @@ async function fetchViewRows(viewId) {
 
   return parseCsv(await resp.text());
 }
+
+// ─── ANALYTICS VIEW — RAW CSV ─────────────────────────────────────────────────
+// Returns the raw CSV text without parsing into JS objects.
+// Used for large tables (donations 230k rows, distributions 62k rows) so we can
+// stream-aggregate without ever holding a full JS object array in memory.
+async function fetchViewCsv(viewId) {
+  const cfg  = encodeURIComponent(JSON.stringify({ responseFormat: 'csv' }));
+  const url  = `${ZOHO_ANALYTICS_BASE}/workspaces/${ENV.ZOHO_WS_ID}/views/${viewId}/data?CONFIG=${cfg}`;
+  const resp = await fetch(url, {
+    headers: {
+      'Authorization':    `Zoho-oauthtoken ${_zohoToken}`,
+      'ZANALYTICS-ORGID': ENV.ZOHO_ORG_ID,
+    },
+  });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Analytics view ${viewId} HTTP ${resp.status}: ${body.slice(0, 200)}`);
+  }
+  return resp.text();
+}
+
+// ─── STREAM-AGGREGATE: DONATIONS ─────────────────────────────────────────────
+// Processes 230,301 donation rows directly from CSV text.
+// Never builds a JS object array — aggregates on the fly by postcode.
+// Memory usage: ~50 MB for the CSV string, ~0.1 MB for the output map.
+function aggregateDonationsFromCsv(csv) {
+  const lines = (csv || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim().split('\n');
+  if (lines.length < 2) return {};
+
+  const headers  = splitCsvLine(lines[0]).map(h => h.replace(/"/g, '').trim().toLowerCase().replace(/[\s.()-]+/g, '_'));
+  const pcIdx    = headers.indexOf('post_code');
+  const amtIdx   = headers.indexOf('amount');
+  const statIdx  = headers.indexOf('status');
+
+  if (pcIdx === -1 || amtIdx === -1 || statIdx === -1) {
+    console.warn('[refresh] Donations CSV missing expected columns:', headers.slice(0, 15).join(', '));
+    return {};
+  }
+
+  const out = {};
+  for (let i = 1; i < lines.length; i++) {
+    const vals   = splitCsvLine(lines[i]);
+    const status = (vals[statIdx] || '').replace(/"/g, '').trim();
+    if (status !== 'Completed') continue;
+
+    const pc    = (vals[pcIdx]  || '').replace(/"/g, '').trim();
+    const total = parseFloat((vals[amtIdx] || '').replace(/[^0-9.]/g, '')) || 0;
+    if (!pc || !/^\d{4}$/.test(pc) || total <= 0) continue;
+
+    if (!out[pc]) {
+      const geo   = lookupPostcode(pc);
+      out[pc] = { count: 0, total: 0, suburb: geo ? geo.suburb : null, state: geo ? geo.state : null, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null };
+    }
+    out[pc].count++;
+    out[pc].total += total;
+  }
+  return out;
+}
+
+// ─── STREAM-AGGREGATE: DISTRIBUTIONS ─────────────────────────────────────────
+// Processes 62,488 distribution rows directly from CSV text.
+// Chains: Distribution.case_name → caseToClient → clientMap → postcode
+function aggregateDistributionsFromCsv(csv, caseToClient, clientMap) {
+  const lines = (csv || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim().split('\n');
+  if (lines.length < 2) return {};
+
+  const headers  = splitCsvLine(lines[0]).map(h => h.replace(/"/g, '').trim().toLowerCase().replace(/[\s.()-]+/g, '_'));
+  const statIdx  = headers.indexOf('status');
+  const caseIdx  = headers.indexOf('case_name');
+  const amtIdx   = headers.indexOf('grand_total');
+
+  if (statIdx === -1 || caseIdx === -1 || amtIdx === -1) {
+    console.warn('[refresh] Distributions CSV missing expected columns:', headers.slice(0, 15).join(', '));
+    return {};
+  }
+
+  const out = {};
+  for (let i = 1; i < lines.length; i++) {
+    const vals   = splitCsvLine(lines[i]);
+    const status = (vals[statIdx] || '').replace(/"/g, '').trim();
+    if (status !== 'Paid' && status !== 'Extracted') continue;
+
+    const caseId = (vals[caseIdx] || '').replace(/"/g, '').trim();
+    const amount = parseFloat((vals[amtIdx] || '').replace(/[^0-9.]/g, '')) || 0;
+    if (!caseId || amount <= 0) continue;
+
+    const clientId = caseToClient[caseId];
+    if (!clientId) continue;
+
+    const client = clientMap[clientId];
+    if (!client || !client.postcode) continue;
+
+    const pc = client.postcode;
+    if (!/^\d{4}$/.test(pc)) continue;
+
+    if (!out[pc]) {
+      const geo   = lookupPostcode(pc);
+      out[pc] = { count: 0, total: 0, suburb: client.suburb || (geo ? geo.suburb : null), state: client.state || (geo ? geo.state : null), lat: geo ? geo.lat : null, lng: geo ? geo.lng : null };
+    }
+    out[pc].count++;
+    out[pc].total += amount;
+  }
+  return out;
+}
+
 
 // ─── SHARED LOOKUP BUILDERS ───────────────────────────────────────────────────
 function buildClientMap(clientRows) {
