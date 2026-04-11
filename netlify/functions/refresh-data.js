@@ -241,6 +241,7 @@ async function fetchCasesFromAnalytics() {
     JOIN Clients cl ON ca.\`Client Name\` = cl.Id
     WHERE ca.Stage IS NOT NULL
       AND (ca.Type = 'Zakat Receiver' OR ca.\`Internal Case Type\` = 'Zakat Receiver')
+      AND ca.\`Created Time\` >= '2025-01-01'
   `.trim();
 
   const csv = await zohoAnalyticsSql(sql);
