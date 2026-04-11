@@ -148,8 +148,8 @@ async function fetchAllViewRows(viewId, extraConfig) {
 // ── CASES + CLIENTS ───────────────────────────────────────────────────────────
 async function fetchCasesFromAnalytics() {
   const [caseRows, clientRows] = await Promise.all([
-    fetchAllViewRows(VIEW_CASES,   { selectedColumns: 'Id,Client Name,Stage,Description,Created Time,Internal Case Type,Type' }),
-    fetchAllViewRows(VIEW_CLIENTS, { selectedColumns: 'Id,Mailing Zip,Mailing City,Mailing State,Domestic Violence' }),
+    fetchAllViewRows(VIEW_CASES,   {}),
+    fetchAllViewRows(VIEW_CLIENTS, {}),
   ]);
 
   // Build client lookup
@@ -201,9 +201,7 @@ async function fetchCasesFromAnalytics() {
 
 // ── DONATIONS ─────────────────────────────────────────────────────────────────
 async function fetchDonationsFromAnalytics() {
-  const rows = await fetchAllViewRows(VIEW_DONATIONS, {
-    selectedColumns: 'post_code,amount,status',
-  });
+  const rows = await fetchAllViewRows(VIEW_DONATIONS, {});
 
   const out = {};
   rows.forEach(r => {
@@ -227,9 +225,9 @@ async function fetchDonationsFromAnalytics() {
 // Cases.Client Name -> Clients.Mailing Zip to resolve the postcode.
 async function fetchDistributionsFromAnalytics() {
   const [caseRows, clientRows, distRows] = await Promise.all([
-    fetchAllViewRows(VIEW_CASES,         { selectedColumns: 'Id,Client Name' }),
-    fetchAllViewRows(VIEW_CLIENTS,       { selectedColumns: 'Id,Mailing Zip,Mailing City,Mailing State' }),
-    fetchAllViewRows(VIEW_DISTRIBUTIONS, { selectedColumns: 'Id,Case Name,Grand Total,Status' }),
+    fetchAllViewRows(VIEW_CASES,         {}),
+    fetchAllViewRows(VIEW_CLIENTS,       {}),
+    fetchAllViewRows(VIEW_DISTRIBUTIONS, {}),
   ]);
 
   // Build lookups
