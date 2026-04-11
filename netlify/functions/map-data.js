@@ -82,7 +82,7 @@ function ok(data, headers, cacheHit) {
 }
 
 function buildCorsHeaders(event) {
-  const origin  = (event.headers?.origin || event.headers?.referer || '');
+  const origin  = (event.headers && (event.headers.origin || event.headers.referer)) || '';
   const allowed = (process.env.ALLOWED_ORIGINS || 'https://nzf.org.au,https://www.nzf.org.au')
     .split(',').map(s => s.trim());
 
