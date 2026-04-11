@@ -4,35 +4,28 @@
  * map-data.js — NZF Community Map data endpoint
  *
  * Serves pre-processed map data from Netlify Blobs.
- * Data is populated daily by refresh-data.js (scheduled function).
+ * Data is populated daily by refresh-data-background.js (scheduled function).
  *
- * Cache hierarchy (fastest to slowest):
- *   1. In-memory (warm Lambda reuse, ~0ms)
- *   2. Netlify Blobs (~100ms)
- *   3. Empty scaffold (first deploy, before any refresh has run)
+ * Uses raw HTTP fetch against the Netlify Blobs REST API directly,
+ * bypassing the @netlify/blobs SDK to avoid context/namespace issues.
+ * Store path: site:nzf-map/aggregated-v2
  */
 
-const BLOB_STORE  = 'nzf-map';
+const BLOB_API    = 'https://api.netlify.com/api/v1/blobs';
+const SITE_ID     = process.env.NETLIFY_SITE_ID || '669161e2-4220-4f4c-9dfa-973fe0ab7808';
+const BLOB_TOKEN  = process.env.NETLIFY_BLOBS_TOKEN || process.env.NETLIFY_TOKEN;
+const STORE_PATH  = 'site:nzf-map';  // SDK adds "site:" prefix to store names
 const BLOB_OUTPUT = 'aggregated-v2';
 
-// In-memory cache: survives across warm Lambda reuses within the same invocation hour.
-// We store generatedAt alongside the data so we can invalidate when fresh data arrives.
+// In-memory cache: survives across warm Lambda reuses
 let _memCache       = null;
 let _memGeneratedAt = null;
 
 exports.handler = async (event) => {
   const method = event.httpMethod;
 
-  // Handle CORS preflight
   if (method === 'OPTIONS') {
-    return {
-      statusCode: 204,
-      headers: {
-        ...buildCorsHeaders(event),
-        'Access-Control-Max-Age': '86400',
-      },
-      body: '',
-    };
+    return { statusCode: 204, headers: { ...buildCorsHeaders(event), 'Access-Control-Max-Age': '86400' }, body: '' };
   }
 
   if (!['GET', 'HEAD'].includes(method)) {
@@ -40,54 +33,45 @@ exports.handler = async (event) => {
   }
 
   const headers = buildCorsHeaders(event);
+  if (method === 'HEAD') return { statusCode: 200, headers, body: '' };
 
-  if (method === 'HEAD') {
-    return { statusCode: 200, headers, body: '' };
-  }
-
-  // ── 1. In-memory cache ─────────────────────────────────────────────────────
+  // ── 1. In-memory cache ───────────────────────────────────────────────────────
   if (_memCache) {
     return ok(_memCache, headers, 'MEM');
   }
 
-  // ── 2. Netlify Blobs ───────────────────────────────────────────────────────
-  try {
-    const { getStore } = require('@netlify/blobs');
+  // ── 2. Netlify Blobs (raw HTTP — no SDK) ─────────────────────────────────────
+  if (BLOB_TOKEN) {
+    try {
+      const url  = `${BLOB_API}/${SITE_ID}/${STORE_PATH}/${BLOB_OUTPUT}`;
+      const resp = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${BLOB_TOKEN}` },
+      });
 
-    // Use explicit credentials when available (for "Run now" invocations that
-    // don't have the Netlify context auto-injected)
-    const siteID = process.env.NETLIFY_SITE_ID;
-    const token  = process.env.NETLIFY_BLOBS_TOKEN || process.env.NETLIFY_TOKEN;
-    const store  = (siteID && token)
-      ? getStore({ name: BLOB_STORE, siteID, token })
-      : getStore(BLOB_STORE);
+      if (resp.ok) {
+        const parsed = await resp.json();
+        const ageMs  = Date.now() - new Date(parsed.generatedAt || 0).getTime();
 
-    const raw = await store.get(BLOB_OUTPUT);
-
-    if (raw) {
-      const parsed = JSON.parse(raw);
-
-      // Accept data up to 26 hours old. The 4am refresh + 15-minute runtime means
-      // freshest data is ~4:15am. A user at 3:59am the next day is 23h44m later —
-      // well within 26h. This prevents a 1-hour daily window of empty responses.
-      const ageMs = Date.now() - new Date(parsed.generatedAt || 0).getTime();
-      if (ageMs < 26 * 60 * 60 * 1000) {
-        // Only cache in memory if it's the same data we already have, or we have none.
-        // This prevents serving stale in-memory data after the daily refresh runs.
-        if (!_memGeneratedAt || parsed.generatedAt !== _memGeneratedAt) {
-          _memCache       = parsed;
-          _memGeneratedAt = parsed.generatedAt;
+        if (ageMs < 26 * 60 * 60 * 1000) {
+          if (!_memGeneratedAt || parsed.generatedAt !== _memGeneratedAt) {
+            _memCache       = parsed;
+            _memGeneratedAt = parsed.generatedAt;
+          }
+          return ok(parsed, headers, 'BLOB');
+        } else {
+          console.log('[map-data] Blob data too old:', Math.round(ageMs / 3600000) + 'h');
         }
-        return ok(parsed, headers, 'BLOB');
+      } else {
+        console.log('[map-data] Blob fetch HTTP', resp.status);
       }
+    } catch (e) {
+      console.log('[map-data] Blob fetch error:', e.message);
     }
-  } catch (e) {
-    console.log('[map-data] Blobs unavailable:', e.message);
+  } else {
+    console.log('[map-data] NETLIFY_BLOBS_TOKEN not set — serving scaffold');
   }
 
-  // ── 3. Empty scaffold ──────────────────────────────────────────────────────
-  // Returned on first deploy before any refresh has run.
-  // The client checks for _status: 'initialising' and shows a loading message.
+  // ── 3. Empty scaffold ────────────────────────────────────────────────────────
   return ok({
     generatedAt:   new Date().toISOString(),
     postcodes:     [],
@@ -97,7 +81,6 @@ exports.handler = async (event) => {
   }, headers, 'EMPTY');
 };
 
-// ─── HELPERS ─────────────────────────────────────────────────────────────────
 function ok(data, headers, cacheHit) {
   return {
     statusCode: 200,
@@ -114,15 +97,13 @@ function ok(data, headers, cacheHit) {
 function buildCorsHeaders(event) {
   const origin  = (event.headers && (event.headers.origin || event.headers.referer)) || '';
   const allowed = (process.env.ALLOWED_ORIGINS || 'https://nzf.org.au,https://www.nzf.org.au')
-    .split(',')
-    .map(s => s.trim());
+    .split(',').map(s => s.trim());
 
   if (process.env.NODE_ENV === 'development') {
     allowed.push('http://localhost:8888', 'http://localhost:3000');
   }
 
   const corsOrigin = allowed.find(o => origin.startsWith(o)) || allowed[0];
-
   return {
     'Access-Control-Allow-Origin':  corsOrigin,
     'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
