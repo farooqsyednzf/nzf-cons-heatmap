@@ -1,18 +1,11 @@
 'use strict';
 
 /**
- * refresh-data.js — NZF Community Map daily data pipeline
+ * refresh-data.js - NZF Community Map daily data pipeline
  *
  * Runs at 4:00 AM AEST (18:00 UTC) every day.
- * Timeout: 15 minutes (Netlify scheduled background function).
- *
- * What it does:
- *   1. Fetches all Cases + Client addresses from Zoho Analytics (SQL JOIN)
- *   2. Scans Case Notes in Zoho CRM for domestic violence keywords (COQL)
- *   3. Fetches Donations and Distributions from Zoho Analytics
- *   4. Filters DV cases, maps stages to statuses, extracts tags
- *   5. Generates anonymised summaries via Claude API (cached — only new/changed cases)
- *   6. Stores everything in Netlify Blobs for instant serving by map-data.js
+ * Uses the Zoho Analytics non-bulk view data API (no bulk scopes needed).
+ * Cases and Clients are fetched from separate tables and joined in JS.
  */
 
 const { schedule }  = require('@netlify/functions');
@@ -24,280 +17,306 @@ const {
 } = require('./lib/transforms');
 const { resolveLocation, lookupPostcode } = require('./lib/postcodes');
 
-// ─── ENVIRONMENT ──────────────────────────────────────────────────────────────
-// A single Zoho OAuth client covers both Analytics and CRM.
-// The refresh token does not expire. At the start of each daily run we exchange
-// it for a fresh 1-hour access token used for all Zoho API calls.
+// Environment
 const ZOHO_CLIENT_ID      = process.env.ZOHO_CLIENT_ID;
 const ZOHO_CLIENT_SECRET  = process.env.ZOHO_CLIENT_SECRET;
 const ZOHO_REFRESH_TOKEN  = process.env.ZOHO_REFRESH_TOKEN;
 const ZOHO_TOKEN_URL      = 'https://accounts.zoho.com/oauth/v2/token';
-
 const ZOHO_ORG_ID         = process.env.ZOHO_ORG_ID;
 const ZOHO_WS_ID          = process.env.ZOHO_WS_ID;
 const ZOHO_ANALYTICS_BASE = 'https://analyticsapi.zoho.com/restapi/v2';
 const ZOHO_CRM_BASE       = 'https://www.zohoapis.com/crm/v2';
 
-// Holds the access token for the current run - refreshed once at startup
-let _zohoAccessToken = null;
+// Zoho Analytics view IDs (base tables - confirmed working with non-bulk API)
+const VIEW_CASES         = '1715382000001002494';
+const VIEW_CLIENTS       = '1715382000001002492';
+const VIEW_DONATIONS     = '1715382000006560082';
+const VIEW_DISTRIBUTIONS = '1715382000001002628';
 
 const BLOB_STORE  = 'nzf-map';
 const BLOB_OUTPUT = 'aggregated-v2';
 const BLOB_STATE  = 'cases-state-v1';
-
 const MAX_SUMMARIES = parseInt(process.env.MAX_SUMMARIES_PER_RUN || '500');
 
-// ─── MAIN HANDLER ─────────────────────────────────────────────────────────────
+let _zohoToken = null;
+
+// ── HANDLER ──────────────────────────────────────────────────────────────────
 exports.handler = schedule('0 18 * * *', async () => {
   const start = Date.now();
-  console.log('[refresh] ── Starting daily refresh ──────────────────────────');
+  console.log('[refresh] Starting daily refresh');
 
   try {
-    // ── Step 1: Get a fresh Zoho access token (covers both Analytics and CRM) 
-    try {
-      _zohoAccessToken = await refreshZohoToken();
-      console.log('[refresh] Zoho access token obtained (Analytics + CRM)');
-    } catch (e) {
-      console.error('[refresh] ⚠️  Zoho token refresh failed:', e.message);
-      throw e; // Fatal — cannot fetch any data without a token
-    }
+    _zohoToken = await refreshZohoToken();
+    console.log('[refresh] Zoho access token obtained');
 
-    // ── Step 2: Fetch cases from Analytics (bulk SQL JOIN) ──────────────────
-    console.log('[refresh] Fetching cases + clients from Analytics...');
+    console.log('[refresh] Fetching cases from Analytics...');
     const rawCases = await fetchCasesFromAnalytics();
     console.log(`[refresh] ${rawCases.length} cases fetched`);
 
-    // ── Step 3: Fetch DV-flagged case IDs from CRM Notes ────────────────────
     console.log('[refresh] Scanning CRM notes for DV keywords...');
     const dvNoteIds = await fetchDvCaseIdsFromCrm();
     console.log(`[refresh] ${dvNoteIds.size} cases flagged via notes DV scan`);
 
-    // ── Step 4: Load cached summaries/tags from Blobs ───────────────────────
     const casesState = await loadBlobJson(BLOB_STATE) || {};
     console.log(`[refresh] ${Object.keys(casesState).length} cached case states loaded`);
 
-    // ── Step 5: Fetch Donations + Distributions from Analytics ──────────────
     console.log('[refresh] Fetching donations + distributions...');
     const [donations, distributions] = await Promise.all([
-      fetchDonationsFromAnalytics().catch(e => {
-        console.warn('[refresh] Donations failed:', e.message); return {};
-      }),
-      fetchDistributionsFromAnalytics().catch(e => {
-        console.warn('[refresh] Distributions failed:', e.message); return {};
-      }),
+      fetchDonationsFromAnalytics().catch(e => { console.warn('[refresh] Donations failed:', e.message); return {}; }),
+      fetchDistributionsFromAnalytics().catch(e => { console.warn('[refresh] Distributions failed:', e.message); return {}; }),
     ]);
     console.log(`[refresh] ${Object.keys(donations).length} donation postcodes, ${Object.keys(distributions).length} distribution postcodes`);
 
-    // ── Step 6: Process cases (DV filter, transform, generate summaries) ────
     console.log('[refresh] Processing cases...');
     const { postcodes, updatedState, stats } = await processCases(rawCases, dvNoteIds, casesState);
-    console.log(`[refresh] Results: ${postcodes.length} postcodes | new summaries: ${stats.newSummaries} | reused: ${stats.reused} | DV removed: ${stats.dvFiltered} | no location: ${stats.noLocation}`);
+    console.log(`[refresh] ${postcodes.length} postcodes | new: ${stats.newSummaries} | reused: ${stats.reused} | DV: ${stats.dvFiltered} | no location: ${stats.noLocation}`);
 
-    // ── Step 7: Save updated cases state ────────────────────────────────────
     await saveBlobJson(BLOB_STATE, updatedState);
 
-    // ── Step 8: Build and store final map output ─────────────────────────────
-    const output = {
-      generatedAt: new Date().toISOString(),
-      postcodes,
-      donations,
-      distributions,
-    };
+    const output = { generatedAt: new Date().toISOString(), postcodes, donations, distributions };
     await saveBlobJson(BLOB_OUTPUT, output);
 
-    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-    console.log(`[refresh] ── Done in ${elapsed}s ──────────────────────────────`);
+    console.log(`[refresh] Done in ${((Date.now() - start) / 1000).toFixed(1)}s`);
     return { statusCode: 200 };
-
   } catch (err) {
     console.error('[refresh] Fatal error:', err.message, '\n', err.stack);
     return { statusCode: 500 };
   }
 });
 
-// ─── ZOHO: TOKEN REFRESH ───────────────────────────────────────────────────────
-// Exchanges the long-lived refresh token for a fresh 1-hour access token.
-// One token covers both Analytics and CRM. Called once at the start of each run.
+// ── TOKEN REFRESH ─────────────────────────────────────────────────────────────
 async function refreshZohoToken() {
   if (!ZOHO_CLIENT_ID || !ZOHO_CLIENT_SECRET || !ZOHO_REFRESH_TOKEN) {
     throw new Error('ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET and ZOHO_REFRESH_TOKEN must all be set');
   }
-
-  const body = new URLSearchParams({
+  const params = new URLSearchParams({
     grant_type:    'refresh_token',
     client_id:     ZOHO_CLIENT_ID,
     client_secret: ZOHO_CLIENT_SECRET,
     refresh_token: ZOHO_REFRESH_TOKEN,
   });
-
   const resp = await fetch(ZOHO_TOKEN_URL, {
-    method:  'POST',
+    method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body:    body.toString(),
+    body: params.toString(),
   });
-
   if (!resp.ok) throw new Error(`HTTP ${resp.status} from Zoho token endpoint`);
-
   const data = await resp.json();
-  if (!data.access_token) throw new Error(`No access_token in response: ${JSON.stringify(data)}`);
-
+  if (!data.access_token) throw new Error('No access_token returned: ' + JSON.stringify(data));
   return data.access_token;
 }
 
-// ─── ZOHO CRM: NOTES DV SCAN (COQL) ──────────────────────────────────────────
-// Queries CRM Notes directly for domestic violence keywords.
-// Returns a Set of Deals (case) IDs whose notes contain DV content.
-// Server-side COQL filtering means only matched notes are transferred.
+// ── ANALYTICS VIEW DATA FETCH ─────────────────────────────────────────────────
+// Non-bulk API: GET /workspaces/{wsId}/views/{viewId}/data
+// Paginates automatically. Works with ZohoAnalytics.data.read scope.
+async function fetchAllViewRows(viewId, extraConfig) {
+  const rows    = [];
+  const pageSize = 10000;
+  let offset    = 0;
+  let hasMore   = true;
+
+  while (hasMore) {
+    const cfg = JSON.stringify(Object.assign({
+      responseFormat: 'csv',
+      recordLimit:    pageSize,
+      recordOffset:   offset,
+    }, extraConfig || {}));
+
+    const url  = `${ZOHO_ANALYTICS_BASE}/workspaces/${ZOHO_WS_ID}/views/${viewId}/data?CONFIG=${encodeURIComponent(cfg)}`;
+    const resp = await fetch(url, {
+      headers: {
+        'Authorization':    `Zoho-oauthtoken ${_zohoToken}`,
+        'ZANALYTICS-ORGID': ZOHO_ORG_ID,
+      },
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(`Analytics view ${viewId} HTTP ${resp.status}: ${err.slice(0, 200)}`);
+    }
+
+    const csv  = await resp.text();
+    const page = parseCsv(csv);
+    rows.push(...page);
+    hasMore  = page.length === pageSize;
+    offset  += pageSize;
+  }
+
+  return rows;
+}
+
+// ── CASES + CLIENTS ───────────────────────────────────────────────────────────
+async function fetchCasesFromAnalytics() {
+  const [caseRows, clientRows] = await Promise.all([
+    fetchAllViewRows(VIEW_CASES,   { selectedColumns: 'Id,Client Name,Stage,Description,Created Time,Internal Case Type,Type' }),
+    fetchAllViewRows(VIEW_CLIENTS, { selectedColumns: 'Id,Mailing Zip,Mailing City,Mailing State,Domestic Violence' }),
+  ]);
+
+  // Build client lookup
+  const clientMap = {};
+  clientRows.forEach(c => {
+    const id = (c.id || c['id'] || '').trim();
+    if (!id) return;
+    clientMap[id] = {
+      postcode: (c.mailing_zip   || c['mailing_zip']   || '').trim(),
+      suburb:   (c.mailing_city  || c['mailing_city']  || '').trim(),
+      state:    (c.mailing_state || c['mailing_state'] || '').trim(),
+      dv_flag:  (c.domestic_violence || c['domestic_violence'] || '').trim().toLowerCase(),
+    };
+  });
+
+  const cutoff = new Date('2025-01-01').getTime();
+  const merged = [];
+
+  caseRows.forEach(row => {
+    // Type filter
+    const type = (row.internal_case_type || row.type || '').trim();
+    if (type && type !== 'Zakat Receiver') return;
+
+    // Date filter
+    const rawDate = row.created_time || row['created_time'] || '';
+    if (rawDate) {
+      const d = new Date(rawDate);
+      if (!isNaN(d) && d.getTime() < cutoff) return;
+    }
+
+    const clientId = (row.client_name || row['client_name'] || '').trim();
+    const client   = clientMap[clientId] || {};
+
+    merged.push({
+      id:           (row.id || '').trim(),
+      case_id:      (row.id || '').trim(),
+      stage:        (row.stage || '').trim(),
+      description:  (row.description || '').trim(),
+      created_date: rawDate,
+      postcode:     client.postcode || '',
+      suburb:       client.suburb   || '',
+      state:        client.state    || '',
+      dv_flag:      client.dv_flag  || '',
+    });
+  });
+
+  return merged;
+}
+
+// ── DONATIONS ─────────────────────────────────────────────────────────────────
+async function fetchDonationsFromAnalytics() {
+  const rows = await fetchAllViewRows(VIEW_DONATIONS, {
+    selectedColumns: 'post_code,amount,status',
+  });
+
+  const out = {};
+  rows.forEach(r => {
+    if ((r.status || '').trim() !== 'Completed') return;
+    const pc    = (r.post_code || '').trim();
+    const total = parseFloat(r.amount || '0') || 0;
+    if (!pc || !/^\d{4}$/.test(pc) || total <= 0) return;
+    if (!out[pc]) {
+      const geo = lookupPostcode(pc);
+      out[pc] = { count: 0, total: 0, suburb: geo ? geo.suburb : null, state: geo ? geo.state : null };
+    }
+    out[pc].count++;
+    out[pc].total += total;
+  });
+
+  return out;
+}
+
+// ── DISTRIBUTIONS ─────────────────────────────────────────────────────────────
+// Distributions have no postcode directly. We chain: Distribution.Case Name ->
+// Cases.Client Name -> Clients.Mailing Zip to resolve the postcode.
+async function fetchDistributionsFromAnalytics() {
+  const [caseRows, clientRows, distRows] = await Promise.all([
+    fetchAllViewRows(VIEW_CASES,         { selectedColumns: 'Id,Client Name' }),
+    fetchAllViewRows(VIEW_CLIENTS,       { selectedColumns: 'Id,Mailing Zip,Mailing City,Mailing State' }),
+    fetchAllViewRows(VIEW_DISTRIBUTIONS, { selectedColumns: 'Id,Case Name,Grand Total,Status' }),
+  ]);
+
+  // Build lookups
+  const clientMap = {};
+  clientRows.forEach(c => {
+    const id = (c.id || '').trim();
+    if (id) clientMap[id] = {
+      postcode: (c.mailing_zip   || '').trim(),
+      suburb:   (c.mailing_city  || '').trim(),
+      state:    (c.mailing_state || '').trim(),
+    };
+  });
+
+  const caseToClient = {};
+  caseRows.forEach(row => {
+    const cid      = (row.id || '').trim();
+    const clientId = (row.client_name || '').trim();
+    if (cid && clientId) caseToClient[cid] = clientId;
+  });
+
+  const out = {};
+  distRows.forEach(r => {
+    if ((r.status || '').trim() !== 'Paid') return;
+    const caseId = (r.case_name || '').trim();
+    const amount = parseFloat(r.grand_total || '0') || 0;
+    if (!caseId || amount <= 0) return;
+
+    const clientId = caseToClient[caseId];
+    if (!clientId) return;
+
+    const client = clientMap[clientId];
+    if (!client || !client.postcode) return;
+
+    const pc = client.postcode;
+    if (!/^\d{4}$/.test(pc)) return;
+
+    if (!out[pc]) {
+      const geo = lookupPostcode(pc);
+      out[pc] = { count: 0, total: 0, suburb: client.suburb || (geo ? geo.suburb : null), state: client.state || (geo ? geo.state : null) };
+    }
+    out[pc].count++;
+    out[pc].total += amount;
+  });
+
+  return out;
+}
+
+// ── DV NOTES SCAN ─────────────────────────────────────────────────────────────
 const DV_NOTE_PHRASES = [
-  'domestic violence', 'family violence', 'dv situation', 'dv case', 'dv history',
-  'physical abuse', 'sexual abuse', 'emotional abuse', 'financial abuse', 'verbal abuse',
-  'abusive partner', 'abusive husband', 'abusive spouse', 'abusive relationship',
-  'violent partner', 'violent husband', 'violent ex',
-  'fleeing violence', 'fled violence', 'escaping abuse', 'escaped abuse',
-  'left abusive', 'left violent', 'safe house', 'refuge placement',
-  'apprehended violence', 'restraining order', 'intervention order', 'protection order',
+  'domestic violence', 'family violence', 'physical abuse', 'sexual abuse',
+  'abusive partner', 'abusive husband', 'violent partner', 'violent husband',
+  'restraining order', 'intervention order', 'apprehended violence',
+  'safe house', 'fleeing violence', 'fled violence',
 ];
 
 async function fetchDvCaseIdsFromCrm() {
   const dvIds = new Set();
+  if (!_zohoToken) { console.error('[refresh] No token - Notes DV scan skipped'); return dvIds; }
 
-  if (!_zohoAccessToken) {
-    console.error('[refresh] ⚠️  No Zoho access token — Notes DV scan SKIPPED');
-    console.error('[refresh] ⚠️  Set ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET and ZOHO_REFRESH_TOKEN');
-    console.error('[refresh] ⚠️  DV detection running on Description text + Domestic_Violence field only');
-    return dvIds;
-  }
-
-  // Use a focused subset of phrases for server-side COQL filtering.
-  // The full list in transforms.js is applied client-side to description text.
-  const coqlCriteria = [
-    'domestic violence', 'family violence', 'physical abuse', 'sexual abuse',
-    'abusive partner', 'abusive husband', 'violent partner', 'violent husband',
-    'restraining order', 'intervention order', 'apprehended violence',
-    'safe house', 'fleeing violence', 'fled violence',
-  ].map(kw => `Note_Content like '%${kw}%'`).join(' OR ');
-
+  const coqlCriteria = DV_NOTE_PHRASES
+    .map(kw => `Note_Content like '%${kw}%'`)
+    .join(' OR ');
   const baseQuery = `SELECT Parent_Id FROM Notes WHERE ($se_module = 'Deals') AND (${coqlCriteria})`;
 
-  let offset = 0;
-  let more   = true;
-  let pages  = 0;
-
+  let offset = 0, more = true;
   while (more) {
-    const query = `${baseQuery} LIMIT 200 OFFSET ${offset}`;
     try {
       const resp = await fetch(`${ZOHO_CRM_BASE}/coql`, {
         method:  'POST',
-        headers: {
-          'Authorization': `Zoho-oauthtoken ${_zohoAccessToken}`,
-          'Content-Type':  'application/json',
-        },
-        body: JSON.stringify({ select_query: query }),
+        headers: { 'Authorization': `Zoho-oauthtoken ${_zohoToken}`, 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ select_query: `${baseQuery} LIMIT 200 OFFSET ${offset}` }),
       });
-
       if (resp.status === 204 || resp.status === 404) break;
-
-      if (!resp.ok) {
-        const body = await resp.text();
-        throw new Error(`COQL HTTP ${resp.status}: ${body.slice(0, 200)}`);
-      }
-
+      if (!resp.ok) { console.warn('[refresh] Notes COQL HTTP', resp.status); break; }
       const data = await resp.json();
-      const rows = data.data || [];
-
-      for (const row of rows) {
-        // Parent_Id is an object: { name, id, module: { api_name } }
-        const parentId = (row.Parent_Id && row.Parent_Id.id) ? row.Parent_Id.id : row.Parent_Id;
-        if (parentId) dvIds.add(String(parentId));
-      }
-
-      more   = (data.info && data.info.more_records === true);
+      (data.data || []).forEach(row => {
+        const pid = (row.Parent_Id && row.Parent_Id.id) ? row.Parent_Id.id : row.Parent_Id;
+        if (pid) dvIds.add(String(pid));
+      });
+      more    = data.info && data.info.more_records === true;
       offset += 200;
-      pages++;
-    } catch (e) {
-      console.warn(`[refresh] CRM notes page ${pages + 1} failed:`, e.message);
-      break;
-    }
+    } catch (e) { console.warn('[refresh] Notes page failed:', e.message); break; }
   }
-
-  console.log(`[refresh] CRM notes scan: ${pages} pages queried, ${dvIds.size} cases flagged`);
   return dvIds;
 }
 
-// ─── ZOHO ANALYTICS: CASES + CLIENTS ─────────────────────────────────────────
-async function fetchCasesFromAnalytics() {
-  const sql = `
-    SELECT
-      ca.Id                        AS id,
-      ca.\`CASE-ID\`               AS case_id,
-      ca.Stage,
-      ca.Description,
-      ca.\`Created Time\`          AS created_date,
-      cl.\`Mailing Zip\`           AS postcode,
-      cl.\`Mailing City\`          AS suburb,
-      cl.\`Mailing State\`         AS state,
-      cl.\`Domestic Violence\`     AS dv_flag
-    FROM Cases ca
-    JOIN Clients cl ON ca.\`Client Name\` = cl.Id
-    WHERE ca.Stage IS NOT NULL
-      AND (ca.Type = 'Zakat Receiver' OR ca.\`Internal Case Type\` = 'Zakat Receiver')
-      AND ca.\`Created Time\` >= '2025-01-01'
-  `.trim();
-
-  const csv = await zohoAnalyticsSql(sql);
-  return parseCsv(csv);
-}
-
-// ─── ZOHO ANALYTICS: DONATIONS ────────────────────────────────────────────────
-async function fetchDonationsFromAnalytics() {
-  const sql = `
-    SELECT post_code, COUNT(*) AS cnt, SUM(amount) AS total
-    FROM donations
-    WHERE post_code IS NOT NULL AND post_code != '' AND status = 'Completed'
-    GROUP BY post_code
-  `.trim();
-
-  const csv  = await zohoAnalyticsSql(sql);
-  const rows = parseCsv(csv);
-  const out  = {};
-
-  for (const r of rows) {
-    const pc    = (r.post_code || '').trim();
-    const total = parseFloat(r.total) || 0;
-    if (!pc || !/^\d{4}$/.test(pc) || total <= 0) continue;
-    const geo = lookupPostcode(pc);
-    out[pc] = { count: parseInt(r.cnt) || 0, total, suburb: (geo && geo.suburb) ? geo.suburb : null, state: (geo && geo.state) ? geo.state : null };
-  }
-  return out;
-}
-
-// ─── ZOHO ANALYTICS: DISTRIBUTIONS ───────────────────────────────────────────
-async function fetchDistributionsFromAnalytics() {
-  const sql = `
-    SELECT cl.\`Mailing Zip\` AS postcode, COUNT(d.Id) AS cnt, SUM(d.\`Grand Total\`) AS total
-    FROM Distributions d
-    JOIN Cases ca ON d.\`Case Name\` = ca.Id
-    JOIN Clients cl ON ca.\`Client Name\` = cl.Id
-    WHERE d.Status = 'Paid'
-      AND cl.\`Mailing Zip\` IS NOT NULL AND cl.\`Mailing Zip\` != ''
-    GROUP BY cl.\`Mailing Zip\`
-  `.trim();
-
-  const csv  = await zohoAnalyticsSql(sql);
-  const rows = parseCsv(csv);
-  const out  = {};
-
-  for (const r of rows) {
-    const pc    = (r.postcode || '').trim();
-    const total = parseFloat(r.total) || 0;
-    if (!pc || !/^\d{4}$/.test(pc) || total <= 0) continue;
-    const geo = lookupPostcode(pc);
-    out[pc] = { count: parseInt(r.cnt) || 0, total, suburb: (geo && geo.suburb) ? geo.suburb : null, state: (geo && geo.state) ? geo.state : null };
-  }
-  return out;
-}
-
-// ─── CASES PROCESSING PIPELINE ────────────────────────────────────────────────
+// ── CASES PROCESSING ──────────────────────────────────────────────────────────
 async function processCases(rawCases, dvNoteIds, casesState) {
   const stats = { newSummaries: 0, reused: 0, dvFiltered: 0, noLocation: 0 };
   const postcodeMap  = new Map();
@@ -305,53 +324,32 @@ async function processCases(rawCases, dvNoteIds, casesState) {
   let summariesThisRun = 0;
 
   for (const row of rawCases) {
-    const caseId     = String(row.case_id || row.id || '').trim();
-    const description = String(row.description || row.Description || '').trim();
-    const stage      = String(row.stage || row.Stage || '').trim();
-    const rawDate    = row.created_date || row['Created Time'];
-    const rawDvFlag  = String(row.dv_flag || row['Domestic Violence'] || '').toLowerCase();
+    const caseId      = String(row.case_id || row.id || '').trim();
+    const description = String(row.description || '').trim();
+    const stage       = String(row.stage || '').trim();
+    const rawDate     = row.created_date || '';
 
-    // ── DV Filter (three independent layers) ────────────────────────────────
-    // Layer 1: Dedicated Domestic_Violence boolean on the Contact record
-    // Layer 2: Keyword scan of the case Description text
-    // Layer 3: CRM Notes COQL scan (dvNoteIds set, populated above)
-    // Any one layer matching is enough to exclude this case.
-    const isDv = rawDvFlag === 'true'
+    // DV filter
+    const isDv = row.dv_flag === 'true'
       || hasDvContent(description)
       || dvNoteIds.has(String(row.id || ''));
+    if (isDv) { stats.dvFiltered++; continue; }
 
-    if (isDv) {
-      stats.dvFiltered++;
-      continue;
-    }
-
-    // ── Location resolution (forward lookup, then suburb fallback) ───────────
-    const location = resolveLocation({
-      postcode: String(row.postcode || row['Mailing Zip']   || '').trim(),
-      suburb:   String(row.suburb   || row['Mailing City']  || '').trim(),
-      state:    String(row.state    || row['Mailing State'] || '').trim(),
-    });
-
+    // Location
+    const location = resolveLocation({ postcode: row.postcode, suburb: row.suburb, state: row.state });
     if (!location) { stats.noLocation++; continue; }
 
-    // ── Stage → Status mapping ───────────────────────────────────────────────
     const status = mapStageToStatus(stage);
-
-    // ── Date parsing ─────────────────────────────────────────────────────────
     let dateMs = null;
-    if (rawDate) {
-      const d = new Date(rawDate);
-      if (!isNaN(d)) dateMs = d.getTime();
-    }
+    if (rawDate) { const d = new Date(rawDate); if (!isNaN(d)) dateMs = d.getTime(); }
 
-    // ── Summary + Tags (cached by case_id + description hash) ────────────────
+    // Summary + tags
     const srcHash = hashText(description);
     const cached  = casesState[caseId];
-    const needsNewSummary = !cached || cached.srcHash !== srcHash;
+    const needsNew = !cached || cached.srcHash !== srcHash;
 
     let summary, tags;
-
-    if (needsNewSummary && summariesThisRun < MAX_SUMMARIES) {
+    if (needsNew && summariesThisRun < MAX_SUMMARIES) {
       tags    = extractTags(description);
       summary = await generateSummary(description);
       if (!summary) summary = buildFallbackSummary(description, tags);
@@ -362,8 +360,8 @@ async function processCases(rawCases, dvNoteIds, casesState) {
       summary = cached.summary;
       tags    = cached.tags || [];
       updatedState[caseId] = { ...cached, srcHash };
-      if (!needsNewSummary) stats.reused++;
-      else stats.newSummaries++; // Over limit — used fallback
+      if (!needsNew) stats.reused++;
+      else stats.newSummaries++;
     } else {
       tags    = extractTags(description);
       summary = buildFallbackSummary(description, tags);
@@ -371,7 +369,6 @@ async function processCases(rawCases, dvNoteIds, casesState) {
       stats.newSummaries++;
     }
 
-    // ── Group by postcode ────────────────────────────────────────────────────
     const pc = location.postcode;
     if (!postcodeMap.has(pc)) {
       postcodeMap.set(pc, { pc, city: location.suburb, state: location.state, lat: location.lat, lng: location.lng, cases: [] });
@@ -379,57 +376,16 @@ async function processCases(rawCases, dvNoteIds, casesState) {
     postcodeMap.get(pc).cases.push({ s: summary, t: tags, st: status, dateMs });
   }
 
-  // Sort cases within each postcode by date, newest first
-  for (const entry of postcodeMap.values()) {
-    entry.cases.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0));
-  }
+  postcodeMap.forEach(entry => entry.cases.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0)));
 
   return { postcodes: Array.from(postcodeMap.values()), updatedState, stats };
 }
 
-// ─── ZOHO ANALYTICS: SQL EXPORT (async job pattern) ──────────────────────────
-async function zohoAnalyticsSql(sql) {
-  if (!_zohoAccessToken) throw new Error('Zoho access token not initialised — token refresh must run first');
-
-  const cfg  = encodeURIComponent(JSON.stringify({ sqlQuery: sql, responseFormat: 'csv' }));
-  const url  = `${ZOHO_ANALYTICS_BASE}/bulk/workspaces/${ZOHO_WS_ID}/exportjobs?CONFIG=${cfg}`;
-  const hdrs = { 'Authorization': `Zoho-oauthtoken ${_zohoAccessToken}`, 'ZANALYTICS-ORGID': ZOHO_ORG_ID };
-
-  const r = await fetch(url, { method: 'POST', headers: hdrs });
-  if (!r.ok) throw new Error(`Analytics create job: HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
-
-  const d = await r.json();
-  if (!d.data || !d.data.jobId) throw new Error('Analytics: no jobId returned');
-
-  return pollAnalyticsJob(d.data.jobId, hdrs);
-}
-
-async function pollAnalyticsJob(jobId, hdrs, attempts = 0) {
-  if (attempts > 60) throw new Error('Analytics export job timed out');
-
-  const url  = `${ZOHO_ANALYTICS_BASE}/bulk/workspaces/${ZOHO_WS_ID}/exportjobs/${jobId}`;
-  const resp = await fetch(url, { headers: hdrs });
-  const d    = await resp.json();
-  const code = String((d.data && d.data.jobCode) ? d.data.jobCode : '');
-
-  if (code === '1004') {
-    const dl = await fetch(d.data.downloadUrl, { headers: hdrs });
-    if (!dl.ok) throw new Error(`Analytics download: HTTP ${dl.status}`);
-    return dl.text();
-  }
-  if (code === '1003' || code === '1005') throw new Error(`Analytics job failed: code ${code}`);
-
-  await sleep(attempts < 5 ? 1000 : 2000);
-  return pollAnalyticsJob(jobId, hdrs, attempts + 1);
-}
-
-// ─── CSV PARSER ───────────────────────────────────────────────────────────────
+// ── CSV PARSER ────────────────────────────────────────────────────────────────
 function parseCsv(csv) {
-  const lines = (csv || '').trim().split('\n');
+  const lines = (csv || '').replace(/^\uFEFF/, '').trim().split('\n');
   if (lines.length < 2) return [];
-
-  const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim().toLowerCase().replace(/[\s-]+/g, '_'));
-
+  const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim().toLowerCase().replace(/[\s.()-]+/g, '_'));
   return lines.slice(1).map(line => {
     const vals = splitCsvLine(line);
     const obj  = {};
@@ -450,24 +406,12 @@ function splitCsvLine(line) {
   return result;
 }
 
-// ─── NETLIFY BLOBS ────────────────────────────────────────────────────────────
+// ── BLOBS ─────────────────────────────────────────────────────────────────────
 async function loadBlobJson(key) {
-  try {
-    const raw = await getStore(BLOB_STORE).get(key);
-    return raw ? JSON.parse(raw) : null;
-  } catch (e) {
-    console.warn(`[refresh] loadBlobJson(${key}):`, e.message);
-    return null;
-  }
+  try { const r = await getStore(BLOB_STORE).get(key); return r ? JSON.parse(r) : null; }
+  catch (e) { console.warn(`[refresh] loadBlobJson(${key}):`, e.message); return null; }
 }
-
 async function saveBlobJson(key, data) {
-  try {
-    await getStore(BLOB_STORE).set(key, JSON.stringify(data));
-    console.log(`[refresh] Saved: ${key}`);
-  } catch (e) {
-    console.warn(`[refresh] saveBlobJson(${key}):`, e.message);
-  }
+  try { await getStore(BLOB_STORE).set(key, JSON.stringify(data)); console.log(`[refresh] Saved: ${key}`); }
+  catch (e) { console.warn(`[refresh] saveBlobJson(${key}):`, e.message); }
 }
-
-function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
