@@ -10,6 +10,16 @@
 
 const { schedule }  = require('@netlify/functions');
 const { getStore }  = require('@netlify/blobs');
+
+// Helper: create Blobs store with explicit site config when available
+function getBlobStore(name) {
+  const siteID = process.env.NETLIFY_SITE_ID;
+  const token  = process.env.NETLIFY_BLOBS_TOKEN || process.env.NETLIFY_TOKEN;
+  if (siteID && token) {
+    return getStore({ name, siteID, token });
+  }
+  return getStore(name); // auto-config from Netlify context
+}
 const {
   mapStageToStatus, hasDvContent,
   extractTags, hashText,
@@ -36,7 +46,7 @@ const VIEW_DISTRIBUTIONS = '1715382000001002628';
 const BLOB_STORE  = 'nzf-map';
 const BLOB_OUTPUT = 'aggregated-v2';
 const BLOB_STATE  = 'cases-state-v1';
-const MAX_SUMMARIES = parseInt(process.env.MAX_SUMMARIES_PER_RUN || '500');
+const MAX_SUMMARIES = parseInt(process.env.MAX_SUMMARIES_PER_RUN || '0');
 
 let _zohoToken = null;
 
@@ -191,7 +201,7 @@ async function fetchDonationsFromAnalytics() {
   rows.forEach(r => {
     if ((r.status || '').trim() !== 'Completed') return;
     const pc    = (r.post_code || '').trim();
-    const total = parseFloat(r.amount || '0') || 0;
+    const total = parseFloat((r.amount || '').replace(/[^0-9.]/g, '')) || 0;
     if (!pc || !/^\d{4}$/.test(pc) || total <= 0) return;
     if (!out[pc]) {
       const geo = lookupPostcode(pc);
@@ -234,9 +244,10 @@ async function fetchDistributionsFromAnalytics() {
 
   const out = {};
   distRows.forEach(r => {
-    if ((r.status || '').trim() !== 'Paid') return;
+    const distStatus = (r.status || '').trim();
+    if (distStatus !== 'Paid' && distStatus !== 'Extracted') return;
     const caseId = (r.case_name || '').trim();
-    const amount = parseFloat(r.grand_total || '0') || 0;
+    const amount = parseFloat((r.grand_total || '').replace(/[^0-9.]/g, '')) || 0;
     if (!caseId || amount <= 0) return;
 
     const clientId = caseToClient[caseId];
@@ -390,10 +401,10 @@ function splitCsvLine(line) {
 
 // ── BLOBS ─────────────────────────────────────────────────────────────────────
 async function loadBlobJson(key) {
-  try { const r = await getStore(BLOB_STORE).get(key); return r ? JSON.parse(r) : null; }
+  try { const r = await getBlobStore(BLOB_STORE).get(key); return r ? JSON.parse(r) : null; }
   catch (e) { console.warn(`[refresh] loadBlobJson(${key}):`, e.message); return null; }
 }
 async function saveBlobJson(key, data) {
-  try { await getStore(BLOB_STORE).set(key, JSON.stringify(data)); console.log(`[refresh] Saved: ${key}`); }
+  try { await getBlobStore(BLOB_STORE).set(key, JSON.stringify(data)); console.log(`[refresh] Saved: ${key}`); }
   catch (e) { console.warn(`[refresh] saveBlobJson(${key}):`, e.message); }
 }
