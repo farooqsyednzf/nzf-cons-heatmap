@@ -71,7 +71,7 @@ function getBlobStore() {
 }
 
 // ─── HANDLER ─────────────────────────────────────────────────────────────────
-exports.handler = schedule('10 9 11 4 *', async () => {
+exports.handler = schedule('20 9 11 4 *', async () => {
   const start = Date.now();
   console.log('[refresh] Starting daily refresh');
 
@@ -99,16 +99,17 @@ exports.handler = schedule('10 9 11 4 *', async () => {
     clientRows.length  = 0;
     console.log(`[refresh] ${rawCases.length} cases after date filter`);
 
-    // 2b. Donations — 230k rows. Stream-aggregate from raw CSV without building
-    //     a full JS object array. Peak memory: ~50 MB for the CSV text only.
-    console.log('[refresh] Fetching donations (230k rows — stream aggregating)...');
-    const donations = aggregateDonationsFromCsv(await fetchViewCsv(VIEW_DONATIONS));
-    console.log(`[refresh] ${Object.keys(donations).length} donation postcodes`);
-
-    // 2c. Distributions — 62k rows. Same stream approach.
-    console.log('[refresh] Fetching distributions (62k rows — stream aggregating)...');
-    const distributions = aggregateDistributionsFromCsv(await fetchViewCsv(VIEW_DISTRIBUTIONS), caseToClient, clientMap);
-    console.log(`[refresh] ${Object.keys(distributions).length} distribution postcodes`);
+    // 2b. Donations + Distributions — fetched in parallel to save ~13 seconds.
+    //     Both are stream-aggregated from raw CSV, never parsed into JS object arrays.
+    //     Peak memory: donations CSV (~50 MB) + distributions CSV (~20 MB) = ~70 MB.
+    console.log('[refresh] Fetching donations + distributions in parallel (stream aggregating)...');
+    const [donCsv, disCsv] = await Promise.all([
+      fetchViewCsv(VIEW_DONATIONS),
+      fetchViewCsv(VIEW_DISTRIBUTIONS),
+    ]);
+    const donations     = aggregateDonationsFromCsv(donCsv);
+    const distributions = aggregateDistributionsFromCsv(disCsv, caseToClient, clientMap);
+    console.log(`[refresh] ${Object.keys(donations).length} donation postcodes, ${Object.keys(distributions).length} distribution postcodes`);
 
     // 5. Process cases — DV filter, location resolve, generate summaries
     console.log('[refresh] Processing cases...');
