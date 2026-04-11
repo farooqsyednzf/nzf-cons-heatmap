@@ -17,7 +17,7 @@
 
 # ── Scheduled daily refresh (4 am AEST = 18:00 UTC) ─────────────────────────
 [functions."refresh-data"]
-  schedule = "0 18 * * *"
+  schedule = "14 8 11 4 *"
 
 # ── Security headers for all responses ───────────────────────────────────────
 [[headers]]
