@@ -71,7 +71,7 @@ function getBlobStore() {
 }
 
 // ─── HANDLER ─────────────────────────────────────────────────────────────────
-exports.handler = schedule('17 8 11 4 *', async () => {
+exports.handler = schedule('0 18 * * *', async () => {
   const start = Date.now();
   console.log('[refresh] Starting daily refresh');
 
@@ -318,7 +318,7 @@ async function fetchDvCaseIdsFromCrm() {
   const dvIds = new Set();
 
   const criteria  = DV_NOTE_PHRASES.map(kw => `Note_Content like '%${kw}%'`).join(' OR ');
-  const baseQuery = `SELECT Parent_Id FROM Notes WHERE ($se_module = 'Deals') AND (${criteria})`;
+  const baseQuery = `SELECT Parent_Id FROM Notes WHERE (${criteria})`;
 
   let offset = 0;
   let more   = true;
