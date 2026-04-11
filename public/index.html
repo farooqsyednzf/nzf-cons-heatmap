@@ -698,15 +698,15 @@ input[type=range]::-moz-range-thumb {
   </div>
   <div class="sb-body">
     <div class="sb-stats" aria-label="Summary statistics for this postcode">
-      <div class="sb-stat s-app">
+      <div class="sb-stat s-app sb-tab" id="sb-tab-app" role="button" tabindex="0" title="Show applications">
         <span class="ss-num" id="sb-s-app">—</span>
         <span class="ss-lbl">Applications</span>
       </div>
-      <div class="sb-stat s-don">
+      <div class="sb-stat s-don sb-tab" id="sb-tab-don" role="button" tabindex="0" title="Show donations">
         <span class="ss-num" id="sb-s-don">—</span>
         <span class="ss-lbl">Donated</span>
       </div>
-      <div class="sb-stat s-dis">
+      <div class="sb-stat s-dis sb-tab" id="sb-tab-dis" role="button" tabindex="0" title="Show distributions">
         <span class="ss-num" id="sb-s-dis">—</span>
         <span class="ss-lbl">Distributed</span>
       </div>
@@ -739,7 +739,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v12';
+  var CACHE_KEY    = 'nzf_map_v13';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
@@ -892,6 +892,23 @@ input[type=range]::-moz-range-thumb {
     } catch (e) { /* localStorage full or disabled */ }
   }
 
+  // ─── SIDEBAR TAB DELEGATION ─────────────────────────────────────────────────
+  // Use a single delegated listener so it works before and after render()
+  document.querySelector('.sb-stats').addEventListener('click', function(e) {
+    var tile = e.target.closest('.sb-tab');
+    if (!tile) return;
+    var mode = tile.id.replace('sb-tab-', '');
+    sbTabClick(mode);
+  });
+  document.querySelector('.sb-stats').addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var tile = e.target.closest('.sb-tab');
+    if (!tile) return;
+    e.preventDefault();
+    var mode = tile.id.replace('sb-tab-', '');
+    sbTabClick(mode);
+  });
+
   // ─── BOOT ──────────────────────────────────────────────────────────────────
   var cached = loadCache();
   if (cached) {
@@ -1001,13 +1018,6 @@ input[type=range]::-moz-range-thumb {
 
     // Search
     initSearch();
-    ['app','don','dis'].forEach(function(m) {
-      var el=document.getElementById('sb-tab-'+m);
-      if (el) {
-        el.addEventListener('click', function(){sbTabClick(m);});
-        el.addEventListener('keydown', function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();sbTabClick(m);}});
-      }
-    });
 
     // Toggle buttons
     document.querySelectorAll('.vt-btn').forEach(function (btn) {
