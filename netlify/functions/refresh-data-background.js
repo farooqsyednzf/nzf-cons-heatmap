@@ -229,22 +229,29 @@ function aggregateDonationsFromCsv(csv) {
   }
 
   const CUTOFF = new Date('2025-01-01').getTime();
+  const now    = Date.now();
+  const C4w    = now -  4 * 7 * 24 * 3600 * 1000;
+  const C13w   = now - 13 * 7 * 24 * 3600 * 1000;
+  const C26w   = now - 26 * 7 * 24 * 3600 * 1000;
   const out = {};
   for (let i = 1; i < lines.length; i++) {
     const vals   = splitCsvLine(lines[i]);
     const status = (vals[statIdx] || '').replace(/"/g, '').trim();
     if (status !== 'Completed') continue;
 
-    // Date filter: 2025-01-01 onwards (consistent with cases layer)
-    // donation_timestamp format is DD/MM/YYYY HH:MM:SS (Australian) — parse manually
+    // Date filter + dateMs extraction
+    // donation_timestamp format is DD/MM/YYYY HH:MM:SS (Australian)
+    let donDateMs = null;
     if (dateIdx !== -1) {
       const raw = (vals[dateIdx] || '').replace(/"/g, '').trim();
       if (raw) {
         const parts = raw.split(/[\/\s:]/);
-        // parts: [DD, MM, YYYY, HH, MM, SS]
         if (parts.length >= 3) {
           const d = new Date(parts[2], parts[1] - 1, parts[0]);
-          if (!isNaN(d) && d.getTime() < CUTOFF) continue;
+          if (!isNaN(d)) {
+            if (d.getTime() < CUTOFF) continue;
+            donDateMs = d.getTime();
+          }
         }
       }
     }
@@ -254,12 +261,31 @@ function aggregateDonationsFromCsv(csv) {
     if (!pc || !/^\d{4}$/.test(pc) || total <= 0) continue;
 
     if (!out[pc]) {
-      const geo   = lookupPostcode(pc);
-      out[pc] = { count: 0, total: 0, suburb: geo ? geo.suburb : null, state: geo ? geo.state : null, lat: geo ? geo.lat : null, lng: geo ? geo.lng : null };
+      const geo = lookupPostcode(pc);
+      out[pc] = {
+        count: 0, total: 0, items: [],
+        count_4w: 0, total_4w: 0, count_13w: 0, total_13w: 0,
+        count_26w: 0, total_26w: 0,
+        suburb: geo ? geo.suburb : null, state: geo ? geo.state : null,
+        lat: geo ? geo.lat : null, lng: geo ? geo.lng : null,
+      };
     }
     out[pc].count++;
     out[pc].total += total;
+    out[pc].items.push({ amount: Math.round(total * 100) / 100, dateMs: donDateMs });
+    if (donDateMs) {
+      if (donDateMs >= C4w)  { out[pc].count_4w++;  out[pc].total_4w  += total; }
+      if (donDateMs >= C13w) { out[pc].count_13w++; out[pc].total_13w += total; }
+      if (donDateMs >= C26w) { out[pc].count_26w++; out[pc].total_26w += total; }
+    }
   }
+  Object.values(out).forEach(entry => {
+    entry.items.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0));
+    entry.items = entry.items.slice(0, 5);
+    entry.total_4w  = Math.round(entry.total_4w  * 100) / 100;
+    entry.total_13w = Math.round(entry.total_13w * 100) / 100;
+    entry.total_26w = Math.round(entry.total_26w * 100) / 100;
+  });
   return out;
 }
 
@@ -275,25 +301,34 @@ function aggregateDistributionsFromCsv(csv, caseToClient, clientMap) {
   const caseIdx  = headers.indexOf('case_name');
   const amtIdx   = headers.indexOf('grand_total');
   const dateIdx  = headers.indexOf('created_time');
+  const subjIdx  = headers.indexOf('subject');
 
   if (statIdx === -1 || caseIdx === -1 || amtIdx === -1) {
     console.warn('[refresh] Distributions CSV missing expected columns:', headers.slice(0, 15).join(', '));
     return {};
   }
 
-  const CUTOFF = new Date('2025-01-01').getTime();
+  const CUTOFF  = new Date('2025-01-01').getTime();
+  const now     = Date.now();
+  const C4w     = now -  4 * 7 * 24 * 3600 * 1000;
+  const C13w    = now - 13 * 7 * 24 * 3600 * 1000;
+  const C26w    = now - 26 * 7 * 24 * 3600 * 1000;
   const out = {};
   for (let i = 1; i < lines.length; i++) {
     const vals   = splitCsvLine(lines[i]);
     const status = (vals[statIdx] || '').replace(/"/g, '').trim();
     if (status !== 'Paid' && status !== 'Extracted') continue;
 
-    // Date filter: 2025-01-01 onwards (consistent with cases layer)
+    // Date filter + dateMs extraction
+    let disDateMs = null;
     if (dateIdx !== -1) {
       const raw = (vals[dateIdx] || '').replace(/"/g, '').trim();
       if (raw) {
         const d = new Date(raw);
-        if (!isNaN(d) && d.getTime() < CUTOFF) continue;
+        if (!isNaN(d)) {
+          if (d.getTime() < CUTOFF) continue;
+          disDateMs = d.getTime();
+        }
       }
     }
 
@@ -311,12 +346,35 @@ function aggregateDistributionsFromCsv(csv, caseToClient, clientMap) {
     if (!/^\d{4}$/.test(pc)) continue;
 
     if (!out[pc]) {
-      const geo   = lookupPostcode(pc);
-      out[pc] = { count: 0, total: 0, suburb: client.suburb || (geo ? geo.suburb : null), state: client.state || (geo ? geo.state : null), lat: geo ? geo.lat : null, lng: geo ? geo.lng : null };
+      const geo = lookupPostcode(pc);
+      out[pc] = {
+        count: 0, total: 0, items: [],
+        count_4w: 0, total_4w: 0, count_13w: 0, total_13w: 0,
+        count_26w: 0, total_26w: 0,
+        suburb: client.suburb || (geo ? geo.suburb : null),
+        state:  client.state  || (geo ? geo.state  : null),
+        lat: geo ? geo.lat : null, lng: geo ? geo.lng : null,
+      };
     }
     out[pc].count++;
     out[pc].total += amount;
+    const subject = subjIdx !== -1 ? (vals[subjIdx] || '').replace(/"/g, '').trim() : '';
+    out[pc].items.push({ amount: Math.round(amount * 100) / 100, subject, dateMs: disDateMs });
+    // Accumulate time-window buckets
+    if (disDateMs) {
+      if (disDateMs >= C4w)  { out[pc].count_4w++;  out[pc].total_4w  += amount; }
+      if (disDateMs >= C13w) { out[pc].count_13w++; out[pc].total_13w += amount; }
+      if (disDateMs >= C26w) { out[pc].count_26w++; out[pc].total_26w += amount; }
+    }
   }
+  // Sort items newest-first, keep top 5 for display
+  Object.values(out).forEach(entry => {
+    entry.items.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0));
+    entry.items = entry.items.slice(0, 5);
+    entry.total_4w  = Math.round(entry.total_4w  * 100) / 100;
+    entry.total_13w = Math.round(entry.total_13w * 100) / 100;
+    entry.total_26w = Math.round(entry.total_26w * 100) / 100;
+  });
   return out;
 }
 
