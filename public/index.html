@@ -733,7 +733,7 @@ input[type=range]::-moz-range-thumb {
  * Architecture: Single fetch from /api/map-data (Netlify Function).
  * No API tokens in this file — all credentials are server-side environment vars.
  * Cache: localStorage (23-hour TTL) → instant repeat visits.
- * Three layers: Applications (Coda), Donations (Zoho), Distributions (Zoho).
+ * Three layers: Applications (Zoho CRM), Donations (Zoho Analytics), Distributions (Zoho Analytics).
  * ──────────────────────────────────────────────────────────────────────────── */
 (function () {
   'use strict';
@@ -904,13 +904,34 @@ input[type=range]::-moz-range-thumb {
 
   // ─── RENDER ────────────────────────────────────────────────────────────────
   function render(data) {
+    // Handle initialising scaffold — data not yet populated
+    if (data._status === 'initialising') {
+      setProgress(100);
+      showToast('Map data is loading for the first time. Please check back in a few minutes.', false);
+      document.getElementById('hdr-sub').textContent = 'National Zakat Foundation Australia';
+      return;
+    }
+
     ALL_DATA      = data.postcodes     || [];
     ALL_DONATIONS = data.donations     || {};
     ALL_DISTRIB   = data.distributions || {};
 
-    // Build PC_LOOKUP (lat/lng for all postcodes, incl. donation-only ones)
+    // Build PC_LOOKUP from ALL three data sources so donation/distribution markers
+    // always have lat/lng — even for postcodes with no matching case.
     ALL_DATA.forEach(function (d) {
       PC_LOOKUP[d.pc] = { lat: d.lat, lng: d.lng, city: d.city, state: d.state };
+    });
+    Object.keys(ALL_DONATIONS).forEach(function (pc) {
+      if (!PC_LOOKUP[pc]) {
+        var d = ALL_DONATIONS[pc];
+        if (d.lat && d.lng) PC_LOOKUP[pc] = { lat: d.lat, lng: d.lng, city: d.suburb || pc, state: d.state || '' };
+      }
+    });
+    Object.keys(ALL_DISTRIB).forEach(function (pc) {
+      if (!PC_LOOKUP[pc]) {
+        var d = ALL_DISTRIB[pc];
+        if (d.lat && d.lng) PC_LOOKUP[pc] = { lat: d.lat, lng: d.lng, city: d.suburb || pc, state: d.state || '' };
+      }
     });
 
     // Applications layer (always available)
