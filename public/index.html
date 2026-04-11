@@ -739,7 +739,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v9';
+  var CACHE_KEY    = 'nzf_map_v10';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
@@ -1061,12 +1061,17 @@ input[type=range]::-moz-range-thumb {
       var loc = PC_LOOKUP[pc];
       if (!loc || !loc.lat || !loc.lng) return;
 
-      var items = cutoffMs
-        ? (d.items || []).filter(function (it) { return it.dateMs && it.dateMs >= cutoffMs; })
-        : (d.items || []);
-      if (!items.length) return;
+      var filteredTotal, items;
+      if (!cutoffMs) {
+        // All data — use precomputed total for correct marker size
+        filteredTotal = d.total || 0;
+        items = d.items || [];
+      } else {
+        items = (d.items || []).filter(function (it) { return it.dateMs && it.dateMs >= cutoffMs; });
+        filteredTotal = items.reduce(function (s, it) { return s + it.amount; }, 0);
+      }
+      if (!filteredTotal) return;
 
-      var filteredTotal = items.reduce(function (s, it) { return s + it.amount; }, 0);
       var cm = L.circleMarker([loc.lat, loc.lng], {
         radius:      grMoney(filteredTotal),
         fillColor:   COL.DON,
@@ -1098,12 +1103,17 @@ input[type=range]::-moz-range-thumb {
       var loc = PC_LOOKUP[pc];
       if (!loc || !loc.lat || !loc.lng) return;
 
-      var items = cutoffMs
-        ? (d.items || []).filter(function (it) { return it.dateMs && it.dateMs >= cutoffMs; })
-        : (d.items || []);
-      if (!items.length) return;
+      var filteredTotal2, items;
+      if (!cutoffMs) {
+        filteredTotal2 = d.total || 0;
+        items = d.items || [];
+      } else {
+        items = (d.items || []).filter(function (it) { return it.dateMs && it.dateMs >= cutoffMs; });
+        filteredTotal2 = items.reduce(function (s, it) { return s + it.amount; }, 0);
+      }
+      var filteredTotal = filteredTotal2;
+      if (!filteredTotal) return;
 
-      var filteredTotal = items.reduce(function (s, it) { return s + it.amount; }, 0);
       var cm = L.circleMarker([loc.lat, loc.lng], {
         radius:      grMoney(filteredTotal),
         fillColor:   COL.DIS,
@@ -1184,10 +1194,14 @@ input[type=range]::-moz-range-thumb {
       var dcCutoff = dcWeeks < MAX_WEEKS ? Date.now() - dcWeeks * 7 * 24 * 60 * 60 * 1000 : null;
       var donTotal = 0;
       Object.values(ALL_DONATIONS).forEach(function(d) {
-        var filtered = dcCutoff
-          ? (d.items || []).filter(function(it) { return it.dateMs && it.dateMs >= dcCutoff; })
-          : (d.items || []);
-        filtered.forEach(function(it) { donTotal += it.amount; });
+        if (!dcCutoff) {
+          // All data — use precomputed total (accurate even if items array is incomplete)
+          donTotal += (d.total || 0);
+        } else {
+          (d.items || []).forEach(function(it) {
+            if (it.dateMs && it.dateMs >= dcCutoff) donTotal += it.amount;
+          });
+        }
       });
       var donWlbl = dcWeeks < MAX_WEEKS ? 'last ' + dcWeeks + 'wks' : 'since 2025';
       active.push({ val: fmtMoney(donTotal), col: COL.DON, lbl: 'donated', pill: donWlbl,
@@ -1198,10 +1212,13 @@ input[type=range]::-moz-range-thumb {
       var dcCutoff2 = dcWeeks2 < MAX_WEEKS ? Date.now() - dcWeeks2 * 7 * 24 * 60 * 60 * 1000 : null;
       var disTotal = 0;
       Object.values(ALL_DISTRIB).forEach(function(d) {
-        var filtered = dcCutoff2
-          ? (d.items || []).filter(function(it) { return it.dateMs && it.dateMs >= dcCutoff2; })
-          : (d.items || []);
-        filtered.forEach(function(it) { disTotal += it.amount; });
+        if (!dcCutoff2) {
+          disTotal += (d.total || 0);
+        } else {
+          (d.items || []).forEach(function(it) {
+            if (it.dateMs && it.dateMs >= dcCutoff2) disTotal += it.amount;
+          });
+        }
       });
       var disWlbl = dcWeeks2 < MAX_WEEKS ? 'last ' + dcWeeks2 + 'wks' : 'since 2025';
       active.push({ val: fmtMoney(disTotal), col: COL.DIS, lbl: 'distributed', pill: disWlbl,
