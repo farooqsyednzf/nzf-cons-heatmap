@@ -660,9 +660,9 @@ input[type=range]::-moz-range-thumb {
         <input
           type="range"
           id="week-slider"
-          min="1" max="52" value="6" step="1"
+          min="1" max="52" value="52" step="1"
           aria-label="Show cases from last N weeks"
-          aria-valuemin="1" aria-valuemax="52" aria-valuenow="6">
+          aria-valuemin="1" aria-valuemax="52" aria-valuenow="52">
         <div class="slider-ticks" aria-hidden="true">
           <span style="left:0%">1 wk</span>
           <span style="left:5.88%">4 wks</span>
@@ -739,7 +739,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v6';
+  var CACHE_KEY    = 'nzf_map_v7';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
