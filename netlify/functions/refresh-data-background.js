@@ -71,7 +71,7 @@ function getBlobStore() {
 }
 
 // ─── HANDLER ─────────────────────────────────────────────────────────────────
-exports.handler = schedule('48 10 11 4 *', async () => {
+exports.handler = schedule('0 18 * * *', async () => {
   const start = Date.now();
   console.log('[refresh] Starting daily refresh');
 
