@@ -919,7 +919,14 @@ input[type=range]::-moz-range-thumb {
       .then(function (data) {
         saveCache(data);
         setProgress(90);
-        render(data);
+        try {
+          render(data);
+        } catch (renderErr) {
+          console.error('[NZF Map] render() threw:', renderErr.message, renderErr);
+          setProgress(100);
+          showToast('Map rendering error: ' + renderErr.message, true);
+          return;
+        }
       })
       .catch(function (err) {
         console.error('[NZF Map]', err);
