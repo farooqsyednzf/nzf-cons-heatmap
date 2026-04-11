@@ -1,0 +1,19 @@
+{
+  "name": "nzf-community-map",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NZF Australia Community Need Map",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev":       "netlify dev",
+    "refresh":   "netlify functions:invoke refresh-data --no-identity",
+    "postcodes": "node scripts/build-postcodes.js"
+  },
+  "dependencies": {
+    "@netlify/blobs":     "^7.3.0",
+    "@netlify/functions": "^2.8.0"
+  },
+  "devDependencies": {
+    "netlify-cli": "^17.0.0"
+  }
+}
