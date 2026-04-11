@@ -59,22 +59,34 @@ exports.handler = schedule('0 18 * * *', async () => {
     _zohoToken = await refreshZohoToken();
     console.log('[refresh] Zoho access token obtained');
 
-    console.log('[refresh] Fetching cases from Analytics...');
-    const rawCases = await fetchCasesFromAnalytics();
-    console.log(`[refresh] ${rawCases.length} cases fetched`);
+    // Fetch all 4 Analytics tables + DV notes scan in parallel (single round-trip)
+    console.log('[refresh] Fetching all data sources in parallel...');
+    const [tableResults, dvNoteIds, casesState] = await Promise.all([
+      Promise.all([
+        fetchAllViewRows(VIEW_CASES).catch(e => { throw new Error('Cases: ' + e.message); }),
+        fetchAllViewRows(VIEW_CLIENTS).catch(e => { throw new Error('Clients: ' + e.message); }),
+        fetchAllViewRows(VIEW_DONATIONS).catch(e => { console.warn('[refresh] Donations table failed:', e.message); return []; }),
+        fetchAllViewRows(VIEW_DISTRIBUTIONS).catch(e => { console.warn('[refresh] Distributions table failed:', e.message); return []; }),
+      ]),
+      fetchDvCaseIdsFromCrm(),
+      loadBlobJson(BLOB_STATE).then(v => v || {}),
+    ]);
 
-    console.log('[refresh] Scanning CRM notes for DV keywords...');
-    const dvNoteIds = await fetchDvCaseIdsFromCrm();
+    const [caseRows, clientRows, donationRows, distRows] = tableResults;
+    console.log(`[refresh] Fetched: ${caseRows.length} cases, ${clientRows.length} clients, ${donationRows.length} donations, ${distRows.length} distributions`);
     console.log(`[refresh] ${dvNoteIds.size} cases flagged via notes DV scan`);
-
-    const casesState = await loadBlobJson(BLOB_STATE) || {};
     console.log(`[refresh] ${Object.keys(casesState).length} cached case states loaded`);
 
-    console.log('[refresh] Fetching donations + distributions...');
-    const [donations, distributions] = await Promise.all([
-      fetchDonationsFromAnalytics().catch(e => { console.warn('[refresh] Donations failed:', e.message); return {}; }),
-      fetchDistributionsFromAnalytics().catch(e => { console.warn('[refresh] Distributions failed:', e.message); return {}; }),
-    ]);
+    // Build shared lookup maps (used by both cases and distributions)
+    const clientMap     = buildClientMap(clientRows);
+    const caseToClient  = buildCaseToClientMap(caseRows);
+
+    // Process each data type
+    const rawCases    = buildRawCases(caseRows, clientMap);
+    console.log(`[refresh] ${rawCases.length} cases after date filter`);
+
+    const donations      = buildDonations(donationRows);
+    const distributions  = buildDistributions(distRows, caseToClient, clientMap);
     console.log(`[refresh] ${Object.keys(donations).length} donation postcodes, ${Object.keys(distributions).length} distribution postcodes`);
 
     console.log('[refresh] Processing cases...');
@@ -139,48 +151,52 @@ async function fetchAllViewRows(viewId) {
   return parseCsv(await resp.text());
 }
 
-// ── CASES + CLIENTS ───────────────────────────────────────────────────────────
-async function fetchCasesFromAnalytics() {
-  const [caseRows, clientRows] = await Promise.all([
-    fetchAllViewRows(VIEW_CASES),
-    fetchAllViewRows(VIEW_CLIENTS),
-  ]);
-
-  // Build client lookup
-  const clientMap = {};
+// ── SHARED LOOKUP BUILDERS ───────────────────────────────────────────────────
+function buildClientMap(clientRows) {
+  const map = {};
   clientRows.forEach(c => {
-    const id = (c.id || c['id'] || '').trim();
+    const id = (c.id || '').trim();
     if (!id) return;
-    clientMap[id] = {
-      postcode: (c.mailing_zip   || c['mailing_zip']   || '').trim(),
-      suburb:   (c.mailing_city  || c['mailing_city']  || '').trim(),
-      state:    (c.mailing_state || c['mailing_state'] || '').trim(),
-      dv_flag:  (c.domestic_violence || c['domestic_violence'] || '').trim().toLowerCase(),
+    map[id] = {
+      postcode: (c.mailing_zip       || '').trim(),
+      suburb:   (c.mailing_city      || '').trim(),
+      state:    (c.mailing_state     || '').trim(),
+      dv_flag:  (c.domestic_violence || '').trim().toLowerCase(),
     };
   });
+  return map;
+}
 
+function buildCaseToClientMap(caseRows) {
+  const map = {};
+  caseRows.forEach(row => {
+    const cid = (row.id          || '').trim();
+    const clt = (row.client_name || '').trim();
+    if (cid && clt) map[cid] = clt;
+  });
+  return map;
+}
+
+// ── CASES ─────────────────────────────────────────────────────────────────────
+function buildRawCases(caseRows, clientMap) {
   const cutoff = new Date('2025-01-01').getTime();
   const merged = [];
 
   caseRows.forEach(row => {
-    // Type filter
     const type = (row.internal_case_type || row.type || '').trim();
     if (type && type !== 'Zakat Receiver') return;
 
-    // Date filter
-    const rawDate = row.created_time || row['created_time'] || '';
+    const rawDate = (row.created_time || '').trim();
     if (rawDate) {
       const d = new Date(rawDate);
       if (!isNaN(d) && d.getTime() < cutoff) return;
     }
 
-    const clientId = (row.client_name || row['client_name'] || '').trim();
-    const client   = clientMap[clientId] || {};
-
+    const client = clientMap[(row.client_name || '').trim()] || {};
     merged.push({
-      id:           (row.id || '').trim(),
-      case_id:      (row.id || '').trim(),
-      stage:        (row.stage || '').trim(),
+      id:           (row.id          || '').trim(),
+      case_id:      (row.id          || '').trim(),
+      stage:        (row.stage       || '').trim(),
       description:  (row.description || '').trim(),
       created_date: rawDate,
       postcode:     client.postcode || '',
@@ -189,14 +205,11 @@ async function fetchCasesFromAnalytics() {
       dv_flag:      client.dv_flag  || '',
     });
   });
-
   return merged;
 }
 
 // ── DONATIONS ─────────────────────────────────────────────────────────────────
-async function fetchDonationsFromAnalytics() {
-  const rows = await fetchAllViewRows(VIEW_DONATIONS);
-
+function buildDonations(rows) {
   const out = {};
   rows.forEach(r => {
     if ((r.status || '').trim() !== 'Completed') return;
@@ -210,49 +223,21 @@ async function fetchDonationsFromAnalytics() {
     out[pc].count++;
     out[pc].total += total;
   });
-
   return out;
 }
 
 // ── DISTRIBUTIONS ─────────────────────────────────────────────────────────────
-// Distributions have no postcode directly. We chain: Distribution.Case Name ->
-// Cases.Client Name -> Clients.Mailing Zip to resolve the postcode.
-async function fetchDistributionsFromAnalytics() {
-  const [caseRows, clientRows, distRows] = await Promise.all([
-    fetchAllViewRows(VIEW_CASES),
-    fetchAllViewRows(VIEW_CLIENTS),
-    fetchAllViewRows(VIEW_DISTRIBUTIONS),
-  ]);
-
-  // Build lookups
-  const clientMap = {};
-  clientRows.forEach(c => {
-    const id = (c.id || '').trim();
-    if (id) clientMap[id] = {
-      postcode: (c.mailing_zip   || '').trim(),
-      suburb:   (c.mailing_city  || '').trim(),
-      state:    (c.mailing_state || '').trim(),
-    };
-  });
-
-  const caseToClient = {};
-  caseRows.forEach(row => {
-    const cid      = (row.id || '').trim();
-    const clientId = (row.client_name || '').trim();
-    if (cid && clientId) caseToClient[cid] = clientId;
-  });
-
+function buildDistributions(distRows, caseToClient, clientMap) {
   const out = {};
   distRows.forEach(r => {
-    const distStatus = (r.status || '').trim();
-    if (distStatus !== 'Paid' && distStatus !== 'Extracted') return;
-    const caseId = (r.case_name || '').trim();
+    const status = (r.status || '').trim();
+    if (status !== 'Paid' && status !== 'Extracted') return;
+    const caseId = (r.case_name   || '').trim();
     const amount = parseFloat((r.grand_total || '').replace(/[^0-9.]/g, '')) || 0;
     if (!caseId || amount <= 0) return;
 
     const clientId = caseToClient[caseId];
     if (!clientId) return;
-
     const client = clientMap[clientId];
     if (!client || !client.postcode) return;
 
@@ -266,7 +251,6 @@ async function fetchDistributionsFromAnalytics() {
     out[pc].count++;
     out[pc].total += amount;
   });
-
   return out;
 }
 
