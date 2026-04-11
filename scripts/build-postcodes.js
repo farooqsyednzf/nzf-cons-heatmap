@@ -1,139 +1,151 @@
+#!/usr/bin/env node
+/**
+ * scripts/build-postcodes.js
+ *
+ * Downloads Australian postcode data and builds the compact JSON lookup file
+ * used by netlify/functions/lib/postcodes.js.
+ *
+ * Run once (or when you want to refresh):
+ *   node scripts/build-postcodes.js
+ *
+ * Output: netlify/functions/data/au-postcodes.json (~500KB, compressed ~150KB)
+ *
+ * Source: Matthew Proctor's AU postcode dataset (public domain)
+ * https://www.matthewproctor.com/australian_postcodes
+ */
+
 'use strict';
 
-/**
- * lib/postcodes.js — Australian postcode lookup utility
- *
- * Provides fast in-memory lookups from a bundled JSON dataset.
- * Format: [ [postcode, suburb, state, lat, lng], ... ]
- *
- * To generate data/au-postcodes.json, run: node scripts/build-postcodes.js
- * Source: https://www.matthewproctor.com/australian_postcodes
- */
+const https  = require('https');
+const path   = require('path');
+const fs     = require('fs');
 
-const path = require('path');
+const DATA_URL  = 'https://www.matthewproctor.com/content/postcodes/australian_postcodes.csv';
+const OUT_FILE  = path.join(__dirname, '../netlify/functions/data/au-postcodes.json');
 
-let _byPostcode = null; // Map<postcode_string, { suburb, state, lat, lng }>
-let _bySuburb   = null; // Map<"suburb|state", postcode_string>
+// Ensure output directory exists
+fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true });
 
-function load() {
-  if (_byPostcode) return;
-  try {
-    const raw  = require('../data/au-postcodes.json');
-    _byPostcode = new Map();
-    _bySuburb   = new Map();
+console.log('Downloading Australian postcode data...');
+console.log(`Source: ${DATA_URL}`);
 
-    for (const [pc, suburb, state, lat, lng] of raw) {
-      const key = String(pc).padStart(4, '0');
-      // Keep only first entry per postcode (primary suburb)
-      if (!_byPostcode.has(key)) {
-        _byPostcode.set(key, { suburb: String(suburb), state: String(state), lat, lng });
-      }
-      // Reverse lookup: suburb+state → first postcode
-      const suburbKey = `${String(suburb).toUpperCase()}|${String(state).toUpperCase()}`;
-      if (!_bySuburb.has(suburbKey)) {
-        _bySuburb.set(suburbKey, key);
-      }
+let csvData = '';
+
+https.get(DATA_URL, (res) => {
+  if (res.statusCode !== 200) {
+    console.error(`HTTP ${res.statusCode} — download failed`);
+    console.error('Alternative: manually download the CSV from the URL above');
+    console.error('Save it as /tmp/au-postcodes.csv and re-run:');
+    console.error('  node scripts/build-postcodes.js --local /tmp/au-postcodes.csv');
+    process.exit(1);
+  }
+
+  res.on('data', chunk => { csvData += chunk; });
+  res.on('end', () => {
+    console.log(`Downloaded ${(csvData.length / 1024).toFixed(0)} KB`);
+    buildJson(csvData);
+  });
+}).on('error', (err) => {
+  console.error('Download error:', err.message);
+  // Try local file argument
+  const localArg = process.argv.indexOf('--local');
+  if (localArg !== -1 && process.argv[localArg + 1]) {
+    const localFile = process.argv[localArg + 1];
+    console.log(`Falling back to local file: ${localFile}`);
+    try {
+      buildJson(fs.readFileSync(localFile, 'utf8'));
+    } catch (e) {
+      console.error('Could not read local file:', e.message);
+      process.exit(1);
     }
-    console.log(`[postcodes] Loaded ${_byPostcode.size} postcodes, ${_bySuburb.size} suburb entries`);
-  } catch (e) {
-    console.warn('[postcodes] Could not load au-postcodes.json:', e.message);
-    console.warn('[postcodes] Run `node scripts/build-postcodes.js` to generate the data file.');
-    _byPostcode = new Map();
-    _bySuburb   = new Map();
+  } else {
+    process.exit(1);
   }
-}
+});
 
-/**
- * Look up a postcode to get suburb, state, lat, lng.
- * @param {string} postcode
- * @returns {{ suburb: string, state: string, lat: number, lng: number } | null}
- */
-function lookupPostcode(postcode) {
-  load();
-  if (!postcode) return null;
-  const key = String(postcode).trim().padStart(4, '0');
-  return _byPostcode.get(key) || null;
-}
+function buildJson(csv) {
+  const lines = csv.trim().split('\n');
+  const header = lines[0].split(',').map(h => h.replace(/"/g, '').trim().toLowerCase());
 
-/**
- * Find a postcode from suburb + optional state.
- * Used when a client record has suburb but no postcode.
- * @param {string} suburb
- * @param {string} [state]
- * @returns {string | null} 4-digit postcode string or null
- */
-function findPostcodeBySuburb(suburb, state) {
-  load();
-  if (!suburb) return null;
-  const suburbUp = String(suburb).trim().toUpperCase();
-  const stateUp  = state ? String(state).trim().toUpperCase() : null;
+  // Find column indices
+  const col = name => header.indexOf(name);
+  const idxPc     = col('postcode');
+  const idxLoc    = col('locality'); // suburb/locality name
+  const idxState  = col('state');
+  const idxLat    = col('lat');
+  const idxLng    = col('long');   // 'long' in Matthew Proctor's dataset
 
-  // Try exact suburb + state match first
-  if (stateUp) {
-    const match = _bySuburb.get(`${suburbUp}|${stateUp}`);
-    if (match) return match;
+  if ([idxPc, idxLoc, idxState, idxLat, idxLng].some(i => i === -1)) {
+    console.error('Unexpected CSV headers:', header);
+    console.error('Expected: postcode, locality, state, lat, long');
+    process.exit(1);
   }
 
-  // Fall back to suburb-only search across all states
-  for (const [key, pc] of _bySuburb.entries()) {
-    if (key.startsWith(`${suburbUp}|`)) return pc;
-  }
-  return null;
-}
+  // Parse rows into compact array: [postcode, suburb, state, lat, lng]
+  const seenPc   = new Set();
+  const entries  = [];
+  let skipped    = 0;
 
-/**
- * Get the primary suburb name for a postcode.
- * Useful for enriching donation records that only have a postcode.
- * @param {string} postcode
- * @returns {string | null}
- */
-function getSuburb(postcode) {
-  const info = lookupPostcode(postcode);
-  return info ? info.suburb : null;
-}
+  for (let i = 1; i < lines.length; i++) {
+    const row = parsecsv(lines[i]);
+    if (!row || row.length < Math.max(idxPc, idxLoc, idxState, idxLat, idxLng) + 1) continue;
 
-/**
- * Resolve full location info for a case that may have partial data.
- * Priority: postcode (forward lookup) → suburb+state (reverse lookup)
- * @param {{ postcode?: string, suburb?: string, state?: string }} input
- * @returns {{ postcode: string, suburb: string, state: string, lat: number, lng: number } | null}
- */
-function resolveLocation(input) {
-  load();
-  const { postcode, suburb, state } = input || {};
+    const pc    = (row[idxPc]  || '').replace(/"/g, '').trim().padStart(4, '0');
+    const loc   = (row[idxLoc] || '').replace(/"/g, '').trim().toUpperCase();
+    const state = (row[idxState] || '').replace(/"/g, '').trim().toUpperCase();
+    const lat   = parseFloat(row[idxLat]);
+    const lng   = parseFloat(row[idxLng]);
 
-  // 1. Forward lookup from postcode
-  if (postcode && postcode.trim()) {
-    const info = lookupPostcode(postcode.trim());
-    if (info) {
-      return {
-        postcode: String(postcode).trim().padStart(4, '0'),
-        suburb:   suburb || info.suburb,  // prefer CRM suburb if available
-        state:    state  || info.state,
-        lat:      info.lat,
-        lng:      info.lng,
-      };
+    if (!pc || !/^\d{4}$/.test(pc) || !loc || !state || isNaN(lat) || isNaN(lng)) {
+      skipped++;
+      continue;
     }
+
+    // AU state whitelist
+    if (!['NSW', 'VIC', 'QLD', 'WA', 'SA', 'TAS', 'ACT', 'NT'].includes(state)) {
+      skipped++;
+      continue;
+    }
+
+    entries.push([pc, loc, state, parseFloat(lat.toFixed(6)), parseFloat(lng.toFixed(6))]);
   }
 
-  // 2. Reverse lookup from suburb + state
-  if (suburb && suburb.trim()) {
-    const pc = findPostcodeBySuburb(suburb.trim(), state);
-    if (pc) {
-      const info = lookupPostcode(pc);
-      if (info) {
-        return {
-          postcode: pc,
-          suburb:   suburb.trim(),
-          state:    state || info.state,
-          lat:      info.lat,
-          lng:      info.lng,
-        };
-      }
+  // Sort by postcode, primary suburb first (keep all entries for reverse suburb lookup)
+  entries.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+
+  const json = JSON.stringify(entries);
+  fs.writeFileSync(OUT_FILE, json, 'utf8');
+
+  const stats = {
+    total:   entries.length,
+    skipped,
+    unique:  new Set(entries.map(e => e[0])).size,
+    size:    `${(json.length / 1024).toFixed(0)} KB`,
+  };
+
+  console.log(`\n✅ Built postcode data:`);
+  console.log(`   Total entries:    ${stats.total.toLocaleString()}`);
+  console.log(`   Unique postcodes: ${stats.unique.toLocaleString()}`);
+  console.log(`   Skipped rows:     ${stats.skipped.toLocaleString()}`);
+  console.log(`   Output size:      ${stats.size}`);
+  console.log(`   Saved to: ${OUT_FILE}`);
+}
+
+// Simple CSV row parser (handles quoted fields with commas)
+function parsecsv(line) {
+  const result = [];
+  let cur = '';
+  let inQuotes = false;
+  for (const ch of line) {
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      result.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
     }
   }
-
-  return null; // Cannot determine location
+  result.push(cur);
+  return result;
 }
-
-module.exports = { lookupPostcode, findPostcodeBySuburb, getSuburb, resolveLocation };
