@@ -33,8 +33,8 @@ const ZOHO_CLIENT_SECRET  = process.env.ZOHO_CLIENT_SECRET;
 const ZOHO_REFRESH_TOKEN  = process.env.ZOHO_REFRESH_TOKEN;
 const ZOHO_TOKEN_URL      = 'https://accounts.zoho.com/oauth/v2/token';
 
-const ZOHO_ORG_ID         = process.env.ZOHO_ORG_ID || '668395719';
-const ZOHO_WS_ID          = process.env.ZOHO_WS_ID  || '1715382000001002475';
+const ZOHO_ORG_ID         = process.env.ZOHO_ORG_ID;
+const ZOHO_WS_ID          = process.env.ZOHO_WS_ID;
 const ZOHO_ANALYTICS_BASE = 'https://analyticsapi.zoho.com/restapi/v2';
 const ZOHO_CRM_BASE       = 'https://www.zohoapis.com/crm/v2';
 
