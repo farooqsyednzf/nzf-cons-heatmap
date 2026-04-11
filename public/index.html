@@ -1,0 +1,1410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#BE1E2D">
+<meta name="description" content="See where Zakat is needed and distributed across Australia. NZF's live community need map shows anonymised applications, donations and distributions by postcode.">
+<meta property="og:title"       content="NZF Australia — Community Need Map">
+<meta property="og:description" content="See where Zakat is needed across Australia. Live map of anonymised community need cases, donations and distributions.">
+<meta property="og:type"        content="website">
+<meta property="og:url"         content="https://nzf.org.au/local-need">
+<meta name="twitter:card"       content="summary_large_image">
+<title>Community Need Map — NZF Australia</title>
+
+<!-- Preconnect to external domains for faster tile loading -->
+<link rel="preconnect" href="https://cdnjs.cloudflare.com">
+<link rel="preconnect" href="https://a.basemaps.cartocdn.com">
+
+<!-- Leaflet — pinned version with SRI integrity check -->
+<link
+  rel="stylesheet"
+  href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"
+  integrity="sha512-h9FcoyWjHcOcmEVkxOfTLnmZFWIH0iZhZT1H2TbOq55xssQGEJHEaIm+PgoUaZbRvQTNTLSeB68ARYJipY1SQ=="
+  crossorigin="anonymous">
+<script
+  src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"
+  integrity="sha512-BwHfrr4c9kmRkLw6iXFdzcdWV/PGkVgiIyIWLLlTSXzWQzxuSg4DiQUCpauz/EWjgk5TYQqX/kvn9pG1NpYfqg=="
+  crossorigin="anonymous"></script>
+
+<style>
+/* ─── DESIGN TOKENS ──────────────────────────────────────────────────────── */
+:root {
+  --c-brand:      #BE1E2D;
+  --c-brand-dark: #8f1320;
+  --c-brand-pale: #fff0f1;
+  --c-don:        #1D9E75;
+  --c-don-pale:   #e8f8f3;
+  --c-dis:        #185FA5;
+  --c-dis-pale:   #e6f1fb;
+  --c-ink:        #1A1A1A;
+  --c-muted:      #6b7280;
+  --c-border:     #e5e7eb;
+  --c-surface:    #ffffff;
+  --c-bg:         #f9fafb;
+  --r-pill:       9999px;
+  --r-card:       10px;
+  --shadow-sm:    0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.05);
+  --shadow-md:    0 4px 16px rgba(0,0,0,.10), 0 2px 6px rgba(0,0,0,.06);
+  --shadow-lg:    0 10px 40px rgba(0,0,0,.14);
+  --font:         'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --sidebar-w:    400px;
+  --hdr-h:        60px;
+  --bar-h:        52px;
+}
+
+/* ─── RESET & BASE ────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  height: 100%;
+  font-family: var(--font);
+  color: var(--c-ink);
+  background: var(--c-surface);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+button { cursor: pointer; font-family: var(--font); }
+a { color: var(--c-brand); }
+
+/* ─── LAYOUT ─────────────────────────────────────────────────────────────── */
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  height: 100vh; /* fallback */
+}
+#map {
+  flex: 1;
+  z-index: 1;
+  background: #e9ecef;
+}
+
+/* ─── PROGRESS BAR ───────────────────────────────────────────────────────── */
+#progress {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--c-brand-pale);
+  z-index: 10000;
+  pointer-events: none;
+}
+#progress-bar {
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--c-brand), #e8505f);
+  transition: width .35s ease;
+  border-radius: 0 3px 3px 0;
+}
+#progress.done { opacity: 0; transition: opacity .5s .3s; }
+
+/* ─── HEADER ─────────────────────────────────────────────────────────────── */
+#hdr {
+  background: var(--c-surface);
+  border-bottom: 1px solid var(--c-border);
+  box-shadow: var(--shadow-sm);
+  z-index: 900;
+  flex-shrink: 0;
+  min-height: var(--hdr-h);
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.hdr-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.hdr-brand h1 {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.hdr-brand p {
+  font-size: 10px;
+  color: var(--c-muted);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--c-brand);
+  color: #fff;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  animation: pulse 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.live-badge-dot { width: 5px; height: 5px; background: #fff; border-radius: 50%; }
+@keyframes pulse { 0%,100%{opacity:1}50%{opacity:.25} }
+
+/* View toggle */
+.view-toggle {
+  display: flex;
+  gap: 3px;
+  background: var(--c-bg);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-pill);
+  padding: 3px;
+  flex-shrink: 0;
+}
+.vt-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  border: none;
+  background: transparent;
+  color: var(--c-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.vt-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: .4;
+  flex-shrink: 0;
+}
+.vt-btn:hover:not(:disabled) { background: rgba(0,0,0,.04); color: var(--c-ink); }
+.vt-btn[data-view="app"].active { background: var(--c-brand); color: #fff; }
+.vt-btn[data-view="don"].active { background: var(--c-don);   color: #fff; }
+.vt-btn[data-view="dis"].active { background: var(--c-dis);   color: #fff; }
+.vt-btn.active .vt-dot { opacity: .7; }
+.vt-btn:disabled { opacity: .35; cursor: not-allowed; }
+.vt-btn[aria-busy="true"] { opacity: .5; cursor: wait; }
+
+/* Counter chip */
+#counter {
+  background: var(--c-brand-pale);
+  border: 1px solid #f0c0c3;
+  border-radius: 8px;
+  padding: 4px 14px;
+  text-align: center;
+  flex-shrink: 0;
+  display: none;
+}
+#counter-num { font-size: 20px; font-weight: 800; color: var(--c-brand); display: block; line-height: 1.1; }
+#counter-lbl { font-size: 9px; color: var(--c-muted); text-transform: uppercase; letter-spacing: .4px; }
+
+/* Search */
+.search-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 160px;
+  max-width: 260px;
+  margin-left: auto;
+}
+.search-label { font-size: 10px; font-weight: 700; color: var(--c-brand); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+.search-input {
+  width: 100%;
+  padding: 8px 36px 8px 14px;
+  border: 1.5px solid var(--c-border);
+  border-radius: var(--r-pill);
+  font-size: 13px;
+  font-family: var(--font);
+  outline: none;
+  color: var(--c-ink);
+  background: var(--c-surface);
+  transition: border-color .2s, box-shadow .2s;
+}
+.search-input:focus {
+  border-color: var(--c-brand);
+  box-shadow: 0 0 0 3px rgba(190,30,45,.1);
+}
+.search-input::placeholder { color: #bbb; }
+.search-icon  { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); color: #bbb; pointer-events: none; font-size: 14px; }
+.search-clear { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); background: none; border: none; color: #999; font-size: 15px; display: none; padding: 0; line-height: 1; }
+.search-clear:hover { color: var(--c-brand); }
+.search-dropdown {
+  position: absolute;
+  top: calc(100% + 6px); left: 0; right: 0;
+  background: var(--c-surface);
+  border: 1.5px solid var(--c-border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-md);
+  z-index: 9998;
+  overflow: hidden;
+  max-height: 260px;
+  overflow-y: auto;
+  display: none;
+}
+.search-item {
+  padding: 9px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--c-bg);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: background .12s;
+}
+.search-item:last-child { border-bottom: none; }
+.search-item:hover, .search-item.hi { background: var(--c-brand-pale); }
+.si-pc  { font-weight: 700; font-size: 13px; color: var(--c-brand); min-width: 42px; }
+.si-sub { font-size: 12px; color: #555; flex: 1; }
+.si-n   { font-size: 11px; color: #bbb; white-space: nowrap; }
+.search-empty { padding: 12px 14px; font-size: 13px; color: #bbb; text-align: center; }
+
+/* ─── SLIDER BAR ─────────────────────────────────────────────────────────── */
+#slider-bar {
+  background: var(--c-surface);
+  border-bottom: 3px solid var(--c-brand);
+  padding: 9px 20px 10px;
+  flex-shrink: 0;
+  box-shadow: 0 2px 10px rgba(0,0,0,.06);
+  z-index: 899;
+  transition: opacity .25s;
+}
+#slider-bar.dimmed { opacity: .38; pointer-events: none; }
+.slider-inner { display: flex; align-items: center; gap: 14px; max-width: 680px; margin: 0 auto; }
+.slider-label {
+  font-size: 10px; font-weight: 700; color: var(--c-brand);
+  text-transform: uppercase; letter-spacing: .5px; white-space: nowrap;
+}
+.slider-track { flex: 1; position: relative; padding: 4px 0; }
+input[type=range] {
+  -webkit-appearance: none;
+  width: 100%; height: 5px; border-radius: 3px; outline: none; cursor: pointer;
+  background: linear-gradient(to right, var(--c-brand) 0%, var(--c-brand) var(--pct,11.76%), #e8e0e1 var(--pct,11.76%), #e8e0e1 100%);
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--c-brand); border: 3px solid #fff;
+  box-shadow: 0 1px 6px rgba(190,30,45,.4);
+  cursor: pointer; transition: transform .15s, box-shadow .15s;
+}
+input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.15); box-shadow: 0 2px 10px rgba(190,30,45,.5); }
+input[type=range]::-moz-range-thumb {
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--c-brand); border: 3px solid #fff;
+  box-shadow: 0 1px 6px rgba(190,30,45,.4); cursor: pointer;
+}
+.slider-pill {
+  background: var(--c-brand); color: #fff;
+  font-size: 11px; font-weight: 800;
+  padding: 4px 12px; border-radius: var(--r-pill);
+  white-space: nowrap; min-width: 82px; text-align: center;
+}
+.slider-ticks {
+  position: relative; height: 14px; padding-top: 3px;
+  font-size: 9px; color: #bbb;
+}
+.slider-ticks span {
+  position: absolute; transform: translateX(-50%); white-space: nowrap;
+}
+.slider-ticks span:first-child { transform: none; }
+.slider-ticks span:last-child  { transform: translateX(-100%); }
+
+/* ─── SIDEBAR ─────────────────────────────────────────────────────────────── */
+#sidebar {
+  position: fixed;
+  top: 0; right: -440px;
+  width: var(--sidebar-w);
+  height: 100vh;
+  background: var(--c-surface);
+  box-shadow: var(--shadow-lg);
+  z-index: 9999;
+  transition: right .32s cubic-bezier(.4,0,.2,1);
+  display: flex;
+  flex-direction: column;
+  will-change: right;
+}
+#sidebar.open { right: 0; }
+
+/* Sidebar drag handle (mobile only) */
+.sb-handle {
+  display: none;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+.sb-handle-bar {
+  width: 36px; height: 4px;
+  background: rgba(255,255,255,.5);
+  border-radius: 2px;
+}
+
+/* Sidebar header */
+.sb-head {
+  background: var(--c-brand);
+  color: #fff;
+  padding: 20px 18px 16px;
+  position: relative;
+  flex-shrink: 0;
+  transition: background .2s;
+}
+.sb-head.mode-don { background: var(--c-don); }
+.sb-head.mode-dis { background: var(--c-dis); }
+
+.sb-close {
+  position: absolute; top: 12px; right: 12px;
+  background: rgba(255,255,255,.2);
+  border: none; color: #fff; font-size: 14px;
+  width: 30px; height: 30px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+  /* Accessible tap target */
+  min-width: 44px; min-height: 44px; margin: -7px -7px -7px 0;
+}
+.sb-close:hover { background: rgba(255,255,255,.35); }
+.sb-postcode { font-size: 36px; font-weight: 900; line-height: 1; }
+.sb-suburb   { font-size: 12px; opacity: .85; margin-top: 3px; letter-spacing: .2px; }
+.sb-badge {
+  margin-top: 10px;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(255,255,255,.2); border-radius: var(--r-pill);
+  padding: 4px 12px; font-size: 12px; font-weight: 600;
+}
+.sb-badge-dot { width: 7px; height: 7px; background: #fff; border-radius: 50%; }
+
+/* Sidebar body */
+.sb-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  -webkit-overflow-scrolling: touch;
+}
+.sb-body::-webkit-scrollbar { width: 4px; }
+.sb-body::-webkit-scrollbar-thumb { background: #e0c0c3; border-radius: 4px; }
+
+/* 3-metric summary */
+.sb-stats { display: flex; gap: 7px; margin-bottom: 14px; }
+.sb-stat {
+  flex: 1; background: var(--c-bg); border: 1px solid var(--c-border);
+  border-radius: 8px; padding: 8px 6px; text-align: center;
+}
+.ss-num { font-size: 14px; font-weight: 800; display: block; line-height: 1.1; }
+.ss-lbl { font-size: 9px; color: #bbb; text-transform: uppercase; letter-spacing: .4px; margin-top: 2px; display: block; }
+.sb-stat.s-app .ss-num { color: var(--c-brand); }
+.sb-stat.s-don .ss-num { color: var(--c-don); }
+.sb-stat.s-dis .ss-num { color: var(--c-dis); }
+
+.sb-section-label {
+  font-size: 10px; font-weight: 700; color: var(--c-brand);
+  text-transform: uppercase; letter-spacing: .6px;
+  margin-bottom: 10px; padding-bottom: 8px;
+  border-bottom: 2px solid var(--c-bg);
+}
+.sb-section-label.lbl-don { color: var(--c-don); }
+.sb-section-label.lbl-dis { color: var(--c-dis); }
+
+/* Case cards */
+.ccard {
+  background: var(--c-surface); border: 1px solid var(--c-border);
+  border-radius: var(--r-card); padding: 12px 13px;
+  margin-bottom: 9px; transition: box-shadow .15s, border-color .15s;
+}
+.ccard:hover { box-shadow: var(--shadow-sm); border-color: #f0c0c0; }
+.ccard-summary { font-size: 13.5px; line-height: 1.55; color: var(--c-ink); margin-bottom: 8px; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.tag {
+  font-size: 10px; padding: 2px 7px;
+  border-radius: var(--r-pill);
+  background: var(--c-brand-pale); color: var(--c-brand);
+  border: 1px solid #f5c5c8; font-weight: 600;
+}
+.ccard-date { font-size: 10px; color: #bbb; margin-top: 6px; }
+.sb-empty { text-align: center; color: #ccc; font-size: 13px; padding: 32px 0; }
+
+/* Money detail */
+.money-block { background: var(--c-bg); border-radius: var(--r-card); padding: 14px; margin-bottom: 12px; }
+.money-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 7px 0; border-bottom: 1px solid var(--c-border);
+}
+.money-row:last-child { border-bottom: none; }
+.money-lbl { font-size: 12px; color: var(--c-muted); }
+.money-val { font-size: 15px; font-weight: 800; color: var(--c-ink); }
+.sb-note   { font-size: 11px; color: #bbb; text-align: center; padding: 6px 0; }
+
+/* Sidebar backdrop (mobile) */
+#sb-backdrop {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.35);
+  z-index: 9998;
+  opacity: 0;
+  transition: opacity .3s;
+}
+#sb-backdrop.visible { opacity: 1; }
+
+/* ─── HINT & FOOTER ──────────────────────────────────────────────────────── */
+.hint {
+  position: fixed;
+  bottom: 28px; left: 50%;
+  transform: translateX(-50%);
+  background: rgba(26,26,26,.8);
+  color: #fff; padding: 8px 20px;
+  border-radius: var(--r-pill);
+  font-size: 12px; z-index: 800;
+  pointer-events: none;
+  transition: opacity .6s;
+  white-space: nowrap;
+}
+.hint.gone { opacity: 0; }
+.disclaimer {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  text-align: center; font-size: 10px; color: #bbb;
+  background: rgba(255,255,255,.92);
+  border-top: 1px solid var(--c-border);
+  padding: 4px 14px;
+  z-index: 700; pointer-events: none;
+}
+
+/* ─── MOBILE PILL ────────────────────────────────────────────────────────── */
+#mob-pill {
+  display: none;
+  position: fixed; top: 10px; right: 12px;
+  z-index: 950;
+  background: rgba(255,255,255,.93);
+  border: 1px solid rgba(190,30,45,.2);
+  border-radius: 14px; padding: 3px 10px;
+  gap: 4px; align-items: baseline;
+  box-shadow: var(--shadow-sm);
+  pointer-events: none;
+}
+#mob-pill-num { font-size: 12px; font-weight: 700; color: var(--c-brand); }
+#mob-pill-lbl { font-size: 9px; color: var(--c-muted); text-transform: uppercase; letter-spacing: .3px; }
+
+/* ─── ERROR TOAST ────────────────────────────────────────────────────────── */
+#toast {
+  display: none;
+  position: fixed; bottom: 40px; left: 50%;
+  transform: translateX(-50%);
+  background: #1A1A1A; color: #fff;
+  border-radius: 10px; padding: 12px 20px;
+  box-shadow: var(--shadow-lg);
+  z-index: 10001; font-size: 13px;
+  max-width: 90vw; text-align: center;
+  animation: slideUp .25s ease;
+}
+#toast .toast-retry {
+  margin-left: 12px; background: var(--c-brand); color: #fff;
+  border: none; padding: 4px 12px; border-radius: var(--r-pill);
+  font-size: 12px; font-weight: 700; cursor: pointer;
+}
+@keyframes slideUp { from{transform:translateX(-50%) translateY(20px);opacity:0}to{transform:translateX(-50%);opacity:1} }
+
+/* ─── LEAFLET OVERRIDES ──────────────────────────────────────────────────── */
+.leaflet-popup-content-wrapper {
+  border-radius: var(--r-card) !important;
+  border-top: 3px solid var(--c-brand) !important;
+}
+.leaflet-popup-content {
+  font-family: var(--font) !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+}
+.leaflet-control-zoom { box-shadow: var(--shadow-md) !important; }
+
+/* ─── SKELETON (loading state) ───────────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -600px 0; }
+  100% { background-position: 600px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e8e8e8 50%, #f0f0f0 75%);
+  background-size: 600px 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: 4px;
+}
+
+/* ─── MOBILE RESPONSIVE ──────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  #hdr {
+    padding: 10px 14px;
+    gap: 8px;
+  }
+  .hdr-brand p { display: none; }
+
+  .view-toggle {
+    order: 3;
+    flex: 1 1 100%;
+    justify-content: stretch;
+  }
+  .vt-btn { flex: 1; justify-content: center; font-size: 10.5px; padding: 6px 8px; }
+
+  .search-wrap {
+    order: 4;
+    flex: 1 1 100%;
+    max-width: 100%;
+    margin-left: 0;
+  }
+  .search-label { display: none; }
+  .search-input {
+    font-size: 16px; /* Prevent iOS zoom */
+    padding: 11px 40px 11px 16px;
+    border-radius: 28px;
+  }
+
+  #counter { display: none !important; }
+  #mob-pill { display: flex; }
+
+  #slider-bar { padding: 8px 14px 10px; }
+  .slider-ticks { display: none; }
+
+  /* Sidebar becomes bottom sheet on mobile */
+  #sidebar {
+    width: 100%;
+    height: 75vh;
+    top: auto;
+    bottom: -75vh;
+    right: 0;
+    left: 0;
+    border-radius: 18px 18px 0 0;
+    transition: bottom .32s cubic-bezier(.4,0,.2,1);
+    /* Safe area padding for home indicator */
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+  #sidebar.open { bottom: 0; right: 0; }
+  .sb-handle { display: flex; }
+  .sb-head { border-radius: 0; padding-top: 12px; }
+  .sb-postcode { font-size: 28px; }
+  #sb-backdrop { display: block; }
+}
+
+@media (max-width: 400px) {
+  .vt-btn { font-size: 9.5px; padding: 5px 6px; gap: 3px; }
+  .vt-dot { display: none; }
+}
+
+/* Focus visible for keyboard nav */
+:focus-visible {
+  outline: 2px solid var(--c-brand);
+  outline-offset: 2px;
+}
+</style>
+</head>
+<body>
+
+<!-- Loading progress bar (non-blocking — map visible underneath) -->
+<div id="progress" role="progressbar" aria-label="Loading map data" aria-valuenow="0" aria-valuemax="100">
+  <div id="progress-bar"></div>
+</div>
+
+<div id="app">
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header id="hdr" role="banner">
+    <div class="hdr-brand">
+      <div>
+        <h1>Your Community Pulse <span class="live-badge" aria-label="Live data"><span class="live-badge-dot"></span>LIVE</span></h1>
+        <p id="hdr-sub">National Zakat Foundation Australia</p>
+      </div>
+    </div>
+
+    <!-- 3-way view toggle -->
+    <nav class="view-toggle" aria-label="Map layer selector" id="view-toggle">
+      <button class="vt-btn active" data-view="app" id="vt-app" aria-pressed="true">
+        <span class="vt-dot" aria-hidden="true"></span>Applications
+      </button>
+      <button class="vt-btn" data-view="don" id="vt-don" aria-pressed="false" aria-busy="true" disabled>
+        <span class="vt-dot" aria-hidden="true"></span>Donations
+      </button>
+      <button class="vt-btn" data-view="dis" id="vt-dis" aria-pressed="false" aria-busy="true" disabled>
+        <span class="vt-dot" aria-hidden="true"></span>Distributions
+      </button>
+    </nav>
+
+    <!-- Counter (desktop only) -->
+    <div id="counter" aria-live="polite" aria-label="Case count">
+      <span id="counter-num">—</span>
+      <span id="counter-lbl">Cases</span>
+    </div>
+
+    <!-- Search -->
+    <div class="search-wrap" id="search-wrap" role="search">
+      <label class="search-label" for="search-input">Search postcode or suburb</label>
+      <input
+        type="search"
+        class="search-input"
+        id="search-input"
+        placeholder="e.g. 2000 or Auburn…"
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="Search postcode or suburb"
+        aria-controls="search-dropdown"
+        aria-autocomplete="list"
+        aria-expanded="false">
+      <span class="search-icon" aria-hidden="true">&#9906;</span>
+      <button class="search-clear" id="search-clear" aria-label="Clear search">&#10005;</button>
+      <div
+        class="search-dropdown"
+        id="search-dropdown"
+        role="listbox"
+        aria-label="Search results"></div>
+    </div>
+  </header>
+
+  <!-- ── Slider bar ──────────────────────────────────────────────────────── -->
+  <div id="slider-bar" role="region" aria-label="Time period filter">
+    <div class="slider-inner">
+      <span class="slider-label" id="slider-label-txt" aria-hidden="true">Time period</span>
+      <div class="slider-track">
+        <input
+          type="range"
+          id="week-slider"
+          min="1" max="52" value="6" step="1"
+          aria-label="Show cases from last N weeks"
+          aria-valuemin="1" aria-valuemax="52" aria-valuenow="6">
+        <div class="slider-ticks" aria-hidden="true">
+          <span style="left:0%">1 wk</span>
+          <span style="left:5.88%">4 wks</span>
+          <span style="left:23.53%">13 wks</span>
+          <span style="left:49.02%">26 wks</span>
+          <span style="left:100%">All</span>
+        </div>
+      </div>
+      <div class="slider-pill" id="slider-pill" aria-live="polite">Last 6 weeks</div>
+    </div>
+  </div>
+
+  <!-- ── Map ────────────────────────────────────────────────────────────── -->
+  <main id="map" role="application" aria-label="Interactive map of community need by postcode"></main>
+</div>
+
+<!-- ── Sidebar ──────────────────────────────────────────────────────────── -->
+<div id="sb-backdrop" aria-hidden="true"></div>
+<aside
+  id="sidebar"
+  role="complementary"
+  aria-label="Postcode detail panel"
+  aria-hidden="true">
+  <div class="sb-handle" aria-hidden="true"><div class="sb-handle-bar"></div></div>
+  <div class="sb-head" id="sb-head">
+    <button class="sb-close" id="sb-close-btn" aria-label="Close detail panel">&#10005;</button>
+    <div class="sb-postcode" id="sb-pc" aria-label="Postcode">&mdash;</div>
+    <div class="sb-suburb"   id="sb-sub">&mdash;</div>
+    <div class="sb-badge">
+      <div class="sb-badge-dot" aria-hidden="true"></div>
+      <span id="sb-n">&mdash;</span>&thinsp;<span id="sb-badge-lbl">applications this period</span>
+    </div>
+  </div>
+  <div class="sb-body">
+    <div class="sb-stats" aria-label="Summary statistics for this postcode">
+      <div class="sb-stat s-app">
+        <span class="ss-num" id="sb-s-app">—</span>
+        <span class="ss-lbl">Applications</span>
+      </div>
+      <div class="sb-stat s-don">
+        <span class="ss-num" id="sb-s-don">—</span>
+        <span class="ss-lbl">Donated</span>
+      </div>
+      <div class="sb-stat s-dis">
+        <span class="ss-num" id="sb-s-dis">—</span>
+        <span class="ss-lbl">Distributed</span>
+      </div>
+    </div>
+    <div class="sb-section-label" id="sb-section-label">Applications from this community</div>
+    <div id="sb-cases" role="list" aria-label="Application summaries"></div>
+  </div>
+</aside>
+
+<!-- ── Misc UI ────────────────────────────────────────────────────────────── -->
+<div class="hint" id="hint" aria-hidden="true">Toggle between views above, then tap any marker to see local cases</div>
+<div class="disclaimer" aria-hidden="true">
+  &#8505; Application data refreshes daily &nbsp;&middot;&nbsp;
+  Donation &amp; Distribution totals are all-time
+</div>
+<div id="mob-pill" aria-hidden="true">
+  <span id="mob-pill-num">—</span>
+  <span id="mob-pill-lbl">cases</span>
+</div>
+<div id="toast" role="alert" aria-live="assertive"></div>
+
+<script>
+/* ─── NZF Community Need Map ─────────────────────────────────────────────────
+ * Architecture: Single fetch from /api/map-data (Netlify Function).
+ * No API tokens in this file — all credentials are server-side environment vars.
+ * Cache: localStorage (23-hour TTL) → instant repeat visits.
+ * Three layers: Applications (Coda), Donations (Zoho), Distributions (Zoho).
+ * ──────────────────────────────────────────────────────────────────────────── */
+(function () {
+  'use strict';
+
+  // ─── CONSTANTS ─────────────────────────────────────────────────────────────
+  var DATA_URL     = '/api/map-data';
+  var CACHE_KEY    = 'nzf_map_v5';
+  var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
+  var RADIUS_KM    = 10;
+  var MAX_WEEKS    = 52;
+
+  var COL = {
+    APP:  '#BE1E2D',
+    DON:  '#1D9E75',
+    DIS:  '#185FA5',
+  };
+
+  // ─── STATE ─────────────────────────────────────────────────────────────────
+  var ALL_DATA      = []; // postcodes with cases
+  var ALL_DONATIONS = {};
+  var ALL_DISTRIB   = {};
+  var PC_LOOKUP     = {}; // postcode → { lat, lng, city, state }
+  var ACTIVE_VIEW   = 'app';
+  var DATA_READY    = { app: false, don: false, dis: false };
+
+  // ─── DOM REFS ──────────────────────────────────────────────────────────────
+  var slider    = document.getElementById('week-slider');
+  var sliderPil = document.getElementById('slider-pill');
+  var sidebar   = document.getElementById('sidebar');
+  var backdrop  = document.getElementById('sb-backdrop');
+  var toast     = document.getElementById('toast');
+
+  // ─── PROGRESS BAR ──────────────────────────────────────────────────────────
+  function setProgress(pct) {
+    var bar = document.getElementById('progress-bar');
+    var el  = document.getElementById('progress');
+    bar.style.width = pct + '%';
+    el.setAttribute('aria-valuenow', pct);
+    if (pct >= 100) {
+      setTimeout(function () { el.classList.add('done'); }, 400);
+    }
+  }
+
+  // ─── TOAST (non-blocking errors) ───────────────────────────────────────────
+  function showToast(msg, retryable) {
+    toast.innerHTML = msg;
+    if (retryable) {
+      var btn = document.createElement('button');
+      btn.className = 'toast-retry';
+      btn.textContent = 'Retry';
+      btn.onclick = function () { location.reload(); };
+      toast.appendChild(btn);
+    }
+    toast.style.display = 'block';
+    // Auto-dismiss after 8s (unless retryable)
+    if (!retryable) setTimeout(function () { toast.style.display = 'none'; }, 8000);
+  }
+
+  // ─── HELPERS ───────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function fmtDate(ms) {
+    if (!ms) return null;
+    return new Date(ms).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+  function fmtMoney(n) {
+    if (!n || isNaN(n)) return '—';
+    n = parseFloat(n);
+    if (n >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return '$' + Math.round(n / 1e3) + 'k';
+    return '$' + Math.round(n);
+  }
+  function fmtRelative(isoStr) {
+    if (!isoStr) return '';
+    var diff = Date.now() - new Date(isoStr).getTime();
+    var h    = Math.floor(diff / 3.6e6);
+    if (h < 1)  return 'just now';
+    if (h < 24) return h + 'h ago';
+    return Math.floor(h / 24) + 'd ago';
+  }
+  function haversine(lat1, lng1, lat2, lng2) {
+    var R = 6371, r = Math.PI / 180;
+    var dL = (lat2 - lat1) * r, dG = (lng2 - lng1) * r;
+    var a  = Math.sin(dL/2)**2 + Math.cos(lat1*r)*Math.cos(lat2*r)*Math.sin(dG/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+
+  // Marker sizing
+  function grApp(n)   { return Math.max(7, Math.sqrt(n) * 5.5); }
+  function gcApp(n)   { return n >= 15 ? '#7a0000' : n >= 10 ? '#a01020' : n >= 5 ? '#BE1E2D' : n >= 3 ? '#d94050' : '#fca5ad'; }
+  function goApp(n)   { return n >= 10 ? 0.88 : n >= 5 ? 0.80 : 0.70; }
+  function grMoney(t) { return Math.max(6, Math.min(42, Math.sqrt(t / 500) * 3.5)); }
+  function goMoney(t) { return t > 100000 ? 0.85 : t > 50000 ? 0.75 : 0.65; }
+
+  // ─── MAP INIT ──────────────────────────────────────────────────────────────
+  setProgress(10);
+  var map = L.map('map', {
+    center: [-27.5, 134.0],
+    zoom:    4,
+    zoomControl: true,
+    preferCanvas: true,
+    maxZoom: 13,
+  });
+  L.tileLayer(
+    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    {
+      attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> &copy; <a href="https://carto.com">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 13,
+    }
+  ).addTo(map);
+
+  var markerLayer = L.layerGroup().addTo(map);
+  var donLayer    = L.layerGroup();
+  var disLayer    = L.layerGroup();
+
+  // ─── CACHE (localStorage, 23h TTL) ─────────────────────────────────────────
+  function loadCache() {
+    try {
+      var raw = localStorage.getItem(CACHE_KEY);
+      if (!raw) return null;
+      var obj = JSON.parse(raw);
+      if (Date.now() - new Date(obj.cachedAt).getTime() > CACHE_TTL_MS) {
+        localStorage.removeItem(CACHE_KEY);
+        return null;
+      }
+      return obj.data;
+    } catch (e) { return null; }
+  }
+  function saveCache(data) {
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ cachedAt: new Date().toISOString(), data: data }));
+    } catch (e) { /* localStorage full or disabled */ }
+  }
+
+  // ─── BOOT ──────────────────────────────────────────────────────────────────
+  var cached = loadCache();
+  if (cached) {
+    setProgress(80);
+    render(cached);
+  } else {
+    setProgress(25);
+    fetch(DATA_URL, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout ? AbortSignal.timeout(30000) : undefined,
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error('Server returned ' + r.status);
+        setProgress(70);
+        return r.json();
+      })
+      .then(function (data) {
+        saveCache(data);
+        setProgress(90);
+        render(data);
+      })
+      .catch(function (err) {
+        console.error('[NZF Map]', err);
+        setProgress(100);
+        showToast('Could not load map data. Check your connection.', true);
+      });
+  }
+
+  // ─── RENDER ────────────────────────────────────────────────────────────────
+  function render(data) {
+    ALL_DATA      = data.postcodes     || [];
+    ALL_DONATIONS = data.donations     || {};
+    ALL_DISTRIB   = data.distributions || {};
+
+    // Build PC_LOOKUP (lat/lng for all postcodes, incl. donation-only ones)
+    ALL_DATA.forEach(function (d) {
+      PC_LOOKUP[d.pc] = { lat: d.lat, lng: d.lng, city: d.city, state: d.state };
+    });
+
+    // Applications layer (always available)
+    DATA_READY.app = true;
+    updateSlider();
+    setProgress(100);
+
+    // Header sub-text
+    if (data.generatedAt) {
+      document.getElementById('hdr-sub').textContent =
+        'National Zakat Foundation Australia \u00B7 Updated ' + fmtRelative(data.generatedAt);
+    }
+
+    // Donations layer
+    if (Object.keys(ALL_DONATIONS).length > 0) {
+      DATA_READY.don = true;
+      renderDonLayer();
+      enableToggle('don');
+    } else {
+      disableToggle('don', 'Donations data not yet available');
+    }
+
+    // Distributions layer
+    if (Object.keys(ALL_DISTRIB).length > 0) {
+      DATA_READY.dis = true;
+      renderDisLayer();
+      enableToggle('dis');
+    } else {
+      disableToggle('dis', 'Distributions data not yet available');
+    }
+
+    // Sidebar close
+    document.getElementById('sb-close-btn').addEventListener('click', closeSidebar);
+    backdrop.addEventListener('click', closeSidebar);
+    map.on('click', closeSidebar);
+    // Touch: drag down to close sidebar on mobile
+    initDragToClose();
+
+    // Hint auto-dismiss
+    var hint = document.getElementById('hint');
+    setTimeout(function () { hint.classList.add('gone'); }, 7000);
+
+    // Search
+    initSearch();
+
+    // Toggle buttons
+    document.querySelectorAll('.vt-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () { setView(btn.dataset.view); });
+    });
+  }
+
+  // ─── APPLICATION MARKERS ───────────────────────────────────────────────────
+  function renderMarkers(cutoffMs) {
+    markerLayer.clearLayers();
+    var total = 0;
+
+    ALL_DATA.forEach(function (d) {
+      var cases = cutoffMs
+        ? d.cases.filter(function (c) { return c.dateMs && c.dateMs >= cutoffMs; })
+        : d.cases;
+      if (!cases.length) return;
+      total += cases.length;
+
+      var n  = cases.length;
+      var cm = L.circleMarker([d.lat, d.lng], {
+        radius:      grApp(n),
+        fillColor:   gcApp(n),
+        color:       n >= 10 ? 'rgba(90,0,0,.4)' : 'rgba(190,30,45,.3)',
+        weight:      1.5,
+        opacity:     1,
+        fillOpacity: goApp(n),
+      });
+
+      cm.bindTooltip(
+        '<strong>' + d.pc + '</strong>, ' + d.city + ', ' + d.state +
+        '<br><span style="color:' + COL.APP + ';font-weight:700;">' +
+        n + ' application' + (n !== 1 ? 's' : '') + '</span>',
+        { direction: 'top', offset: [0, -8] }
+      );
+
+      cm.on('click', (function (caps, capd) {
+        return function (e) {
+          L.DomEvent.stopPropagation(e);
+          var sorted = caps.slice().sort(function (a, b) { return (b.dateMs || 0) - (a.dateMs || 0); });
+          openSidebarApp(sorted, capd.pc, capd.city, capd.state);
+        };
+      })(cases, d));
+
+      markerLayer.addLayer(cm);
+    });
+
+    // Update counter
+    if (ACTIVE_VIEW === 'app') {
+      var ctr = document.getElementById('counter');
+      var weeks = parseInt(slider.value);
+      document.getElementById('counter-num').textContent = total;
+      document.getElementById('counter-num').style.color = COL.APP;
+      document.getElementById('counter-lbl').textContent =
+        weeks < MAX_WEEKS ? 'cases \u00B7 last ' + weeks + (weeks === 1 ? ' wk' : ' wks') : 'total cases';
+      ctr.style.borderColor = '#f0c0c3';
+      ctr.style.background  = 'var(--c-brand-pale)';
+      ctr.style.display     = 'block';
+
+      var pn = document.getElementById('mob-pill-num');
+      var pl = document.getElementById('mob-pill-lbl');
+      pn.textContent = total;
+      pn.style.color = COL.APP;
+      pl.textContent = weeks < MAX_WEEKS ? 'last ' + weeks + 'wks' : 'all cases';
+    }
+  }
+
+  // ─── DONATION MARKERS ──────────────────────────────────────────────────────
+  function renderDonLayer() {
+    donLayer.clearLayers();
+    Object.keys(ALL_DONATIONS).forEach(function (pc) {
+      var d   = ALL_DONATIONS[pc];
+      var loc = PC_LOOKUP[pc];
+      if (!loc) return;
+      var cm  = L.circleMarker([loc.lat, loc.lng], {
+        radius: grMoney(d.total), fillColor: COL.DON,
+        color: 'rgba(8,80,65,.4)', weight: 1.5, opacity: 1,
+        fillOpacity: goMoney(d.total),
+      });
+      cm.bindTooltip(
+        '<strong>' + pc + '</strong>, ' + loc.city + ', ' + loc.state +
+        '<br><span style="color:' + COL.DON + ';font-weight:700;">' + fmtMoney(d.total) + ' donated</span>' +
+        '<br><span style="color:#888;font-size:11px;">' + d.count.toLocaleString() + ' donors</span>',
+        { direction: 'top', offset: [0, -8] }
+      );
+      cm.on('click', (function (p, dd, ll) {
+        return function (e) { L.DomEvent.stopPropagation(e); openSidebarMoney('don', p, ll, dd); };
+      })(pc, d, loc));
+      donLayer.addLayer(cm);
+    });
+  }
+
+  // ─── DISTRIBUTION MARKERS ──────────────────────────────────────────────────
+  function renderDisLayer() {
+    disLayer.clearLayers();
+    Object.keys(ALL_DISTRIB).forEach(function (pc) {
+      var d   = ALL_DISTRIB[pc];
+      var loc = PC_LOOKUP[pc];
+      if (!loc) return;
+      var cm  = L.circleMarker([loc.lat, loc.lng], {
+        radius: grMoney(d.total), fillColor: COL.DIS,
+        color: 'rgba(4,44,83,.4)', weight: 1.5, opacity: 1,
+        fillOpacity: goMoney(d.total),
+      });
+      cm.bindTooltip(
+        '<strong>' + pc + '</strong>, ' + loc.city + ', ' + loc.state +
+        '<br><span style="color:' + COL.DIS + ';font-weight:700;">' + fmtMoney(d.total) + ' distributed</span>' +
+        '<br><span style="color:#888;font-size:11px;">' + d.count.toLocaleString() + ' distributions</span>',
+        { direction: 'top', offset: [0, -8] }
+      );
+      cm.on('click', (function (p, dd, ll) {
+        return function (e) { L.DomEvent.stopPropagation(e); openSidebarMoney('dis', p, ll, dd); };
+      })(pc, d, loc));
+      disLayer.addLayer(cm);
+    });
+  }
+
+  // ─── VIEW TOGGLE ───────────────────────────────────────────────────────────
+  function setView(v) {
+    if (v === 'don' && !DATA_READY.don) return;
+    if (v === 'dis' && !DATA_READY.dis) return;
+
+    ACTIVE_VIEW = v;
+
+    // Swap layers
+    [markerLayer, donLayer, disLayer].forEach(function (l) { try { map.removeLayer(l); } catch (e) {} });
+    if (v === 'app') markerLayer.addTo(map);
+    if (v === 'don') donLayer.addTo(map);
+    if (v === 'dis') disLayer.addTo(map);
+
+    // Update toggle button states
+    document.querySelectorAll('.vt-btn').forEach(function (btn) {
+      var isActive = btn.dataset.view === v;
+      btn.classList.toggle('active', isActive);
+      btn.setAttribute('aria-pressed', String(isActive));
+    });
+
+    // Slider dim
+    var sliderBar = document.getElementById('slider-bar');
+    var sliderLbl = document.getElementById('slider-label-txt');
+    if (v === 'app') {
+      sliderBar.classList.remove('dimmed');
+      sliderLbl.textContent = 'Time period';
+    } else {
+      sliderBar.classList.add('dimmed');
+      sliderLbl.textContent = 'Applies to Applications only';
+    }
+
+    // Counter / pill
+    var ctr = document.getElementById('counter');
+    var num = document.getElementById('counter-num');
+    var lbl = document.getElementById('counter-lbl');
+    var pn  = document.getElementById('mob-pill-num');
+    var pl  = document.getElementById('mob-pill-lbl');
+
+    if (v === 'app') {
+      updateSlider();
+    } else if (v === 'don') {
+      var donTotal = Object.values(ALL_DONATIONS).reduce(function (s, d) { return s + d.total; }, 0);
+      var donCount = Object.keys(ALL_DONATIONS).length;
+      num.textContent = fmtMoney(donTotal);
+      num.style.color = COL.DON;
+      lbl.textContent = donCount + ' postcodes';
+      ctr.style.borderColor = '#9FE1CB';
+      ctr.style.background  = 'var(--c-don-pale)';
+      ctr.style.display     = 'block';
+      pn.textContent = fmtMoney(donTotal);
+      pn.style.color = COL.DON;
+      pl.textContent = 'donated';
+    } else {
+      var disTotal = Object.values(ALL_DISTRIB).reduce(function (s, d) { return s + d.total; }, 0);
+      var disCount = Object.keys(ALL_DISTRIB).length;
+      num.textContent = fmtMoney(disTotal);
+      num.style.color = COL.DIS;
+      lbl.textContent = disCount + ' postcodes';
+      ctr.style.borderColor = '#B5D4F4';
+      ctr.style.background  = 'var(--c-dis-pale)';
+      ctr.style.display     = 'block';
+      pn.textContent = fmtMoney(disTotal);
+      pn.style.color = COL.DIS;
+      pl.textContent = 'distributed';
+    }
+
+    closeSidebar();
+  }
+
+  function enableToggle(view) {
+    var btn = document.getElementById('vt-' + view);
+    if (!btn) return;
+    btn.disabled = false;
+    btn.removeAttribute('aria-busy');
+    btn.title = '';
+  }
+  function disableToggle(view, reason) {
+    var btn = document.getElementById('vt-' + view);
+    if (!btn) return;
+    btn.disabled = true;
+    btn.removeAttribute('aria-busy');
+    btn.title = reason || 'Unavailable';
+  }
+
+  // ─── SIDEBAR ───────────────────────────────────────────────────────────────
+  function openSidebar() {
+    sidebar.classList.add('open');
+    sidebar.setAttribute('aria-hidden', 'false');
+    backdrop.classList.add('visible');
+    document.getElementById('hint').classList.add('gone');
+  }
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    sidebar.setAttribute('aria-hidden', 'true');
+    backdrop.classList.remove('visible');
+  }
+
+  function updateSbStats(pc, appCountOverride) {
+    var appCount = appCountOverride !== undefined ? appCountOverride
+      : (function () {
+          var d = ALL_DATA.filter(function (x) { return x.pc === pc; })[0];
+          return d ? d.cases.length : 0;
+        })();
+    var don = ALL_DONATIONS[pc];
+    var dis = ALL_DISTRIB[pc];
+    document.getElementById('sb-s-app').textContent = appCount > 0 ? appCount : '—';
+    document.getElementById('sb-s-don').textContent = don ? fmtMoney(don.total) : (DATA_READY.don ? '—' : '…');
+    document.getElementById('sb-s-dis').textContent = dis ? fmtMoney(dis.total) : (DATA_READY.dis ? '—' : '…');
+  }
+
+  function openSidebarApp(cases, pc, city, state, areaLabel) {
+    document.getElementById('sb-head').className = 'sb-head';
+    document.getElementById('sb-pc').textContent  = pc;
+    document.getElementById('sb-sub').textContent = city + (state ? ', ' + state : '');
+    document.getElementById('sb-n').textContent   = cases.length;
+    document.getElementById('sb-badge-lbl').textContent = 'applications this period';
+
+    var lbl = document.getElementById('sb-section-label');
+    lbl.textContent = areaLabel || 'Applications from this community';
+    lbl.className   = 'sb-section-label';
+
+    updateSbStats(pc, cases.length);
+
+    var el = document.getElementById('sb-cases');
+    if (!cases.length) {
+      el.innerHTML = '<div class="sb-empty">No applications in this time period.</div>';
+    } else {
+      el.innerHTML = cases.map(function (c) {
+        var tags = (c.t || [])
+          .map(function (t) { return '<span class="tag">' + esc(t) + '</span>'; })
+          .join('');
+        var dt = fmtDate(c.dateMs);
+        return '<div class="ccard" role="listitem">'
+          + '<div class="ccard-summary">' + esc(c.s) + '</div>'
+          + (tags ? '<div class="tags">' + tags + '</div>' : '')
+          + (dt ? '<div class="ccard-date">&#128197; ' + dt + '</div>' : '')
+          + '</div>';
+      }).join('');
+    }
+    openSidebar();
+  }
+
+  function openSidebarMoney(mode, pc, loc, data) {
+    var isDon = mode === 'don';
+    var col   = isDon ? COL.DON : COL.DIS;
+    document.getElementById('sb-head').className    = 'sb-head mode-' + mode;
+    document.getElementById('sb-pc').textContent    = pc;
+    document.getElementById('sb-sub').textContent   = loc.city + (loc.state ? ', ' + loc.state : '');
+    document.getElementById('sb-n').textContent     = fmtMoney(data.total);
+    document.getElementById('sb-badge-lbl').textContent = isDon ? 'donated from this area' : 'distributed to this area';
+
+    var lbl = document.getElementById('sb-section-label');
+    lbl.textContent = isDon ? 'Donation summary' : 'Distribution summary';
+    lbl.className   = 'sb-section-label ' + (isDon ? 'lbl-don' : 'lbl-dis');
+
+    updateSbStats(pc);
+
+    document.getElementById('sb-cases').innerHTML =
+      '<div class="money-block">'
+      + '<div class="money-row"><span class="money-lbl">' + (isDon ? 'Total donated' : 'Total distributed') + '</span>'
+      + '<span class="money-val" style="color:' + col + '">' + fmtMoney(data.total) + '</span></div>'
+      + '<div class="money-row"><span class="money-lbl">' + (isDon ? 'Number of donations' : 'Number of distributions') + '</span>'
+      + '<span class="money-val">' + data.count.toLocaleString() + '</span></div>'
+      + '</div>'
+      + '<div class="sb-note">All-time totals \u00B7 not filtered by time period</div>';
+    openSidebar();
+  }
+
+  // Drag-to-close on mobile bottom sheet
+  function initDragToClose() {
+    var handle = document.querySelector('.sb-handle');
+    if (!handle) return;
+    var startY = 0;
+    handle.addEventListener('touchstart', function (e) {
+      startY = e.touches[0].clientY;
+    }, { passive: true });
+    handle.addEventListener('touchend', function (e) {
+      if (e.changedTouches[0].clientY - startY > 60) closeSidebar();
+    }, { passive: true });
+  }
+
+  // ─── SLIDER ────────────────────────────────────────────────────────────────
+  function updateSlider() {
+    var weeks    = parseInt(slider.value);
+    var pct      = ((weeks - 1) / (MAX_WEEKS - 1) * 100).toFixed(1);
+    slider.style.setProperty('--pct', pct + '%');
+    slider.setAttribute('aria-valuenow', weeks);
+
+    var cutoffMs = null;
+    if (weeks < MAX_WEEKS) {
+      cutoffMs = Date.now() - weeks * 7 * 24 * 60 * 60 * 1000;
+      sliderPil.textContent = 'Last ' + weeks + (weeks === 1 ? ' week' : ' weeks');
+    } else {
+      sliderPil.textContent = 'All data';
+    }
+    renderMarkers(cutoffMs);
+  }
+  slider.addEventListener('input', updateSlider);
+  // Init slider fill on load
+  (function () {
+    var pct = ((parseInt(slider.value) - 1) / (MAX_WEEKS - 1) * 100).toFixed(1);
+    slider.style.setProperty('--pct', pct + '%');
+  })();
+
+  // ─── SEARCH ────────────────────────────────────────────────────────────────
+  function initSearch() {
+    var inp   = document.getElementById('search-input');
+    var drop  = document.getElementById('search-dropdown');
+    var clear = document.getElementById('search-clear');
+    var icon  = document.getElementById('search-icon');
+    var idx   = -1;
+    var res   = [];
+
+    function getFilteredData() {
+      var weeks    = parseInt(slider.value);
+      var cutoffMs = weeks < MAX_WEEKS ? Date.now() - weeks * 7 * 24 * 60 * 60 * 1000 : null;
+      if (!cutoffMs) return ALL_DATA;
+      return ALL_DATA.filter(function (d) {
+        return d.cases.some(function (c) { return c.dateMs && c.dateMs >= cutoffMs; });
+      });
+    }
+
+    function search(q) {
+      if (!q || q.length < 2) return [];
+      q = q.toLowerCase().trim();
+      return getFilteredData()
+        .filter(function (d) { return d.pc.startsWith(q) || d.city.toLowerCase().includes(q); })
+        .slice(0, 8);
+    }
+
+    function renderDrop(results) {
+      inp.setAttribute('aria-expanded', 'true');
+      if (!results.length) {
+        drop.innerHTML = '<div class="search-empty">No postcodes found</div>';
+      } else {
+        var weeks    = parseInt(slider.value);
+        var cutoffMs = weeks < MAX_WEEKS ? Date.now() - weeks * 7 * 24 * 60 * 60 * 1000 : null;
+        drop.innerHTML = results.map(function (r, i) {
+          var n = cutoffMs
+            ? r.cases.filter(function (c) { return c.dateMs && c.dateMs >= cutoffMs; }).length
+            : r.cases.length;
+          return '<div class="search-item ' + (i === idx ? 'hi' : '') + '" role="option" data-i="' + i + '">'
+            + '<span class="si-pc">' + r.pc + '</span>'
+            + '<span class="si-sub">' + r.city + ', ' + r.state + '</span>'
+            + '<span class="si-n">' + n + ' case' + (n !== 1 ? 's' : '') + '</span>'
+            + '</div>';
+        }).join('');
+      }
+      drop.style.display = 'block';
+    }
+
+    function selectResult(r) {
+      inp.value = r.pc + ', ' + r.city;
+      clear.style.display = 'block';
+      icon.style.display  = 'none';
+      drop.style.display  = 'none';
+      inp.setAttribute('aria-expanded', 'false');
+      res = []; idx = -1;
+      map.flyTo([r.lat, r.lng], 11, { duration: 1.2 });
+      setTimeout(function () {
+        var weeks    = parseInt(slider.value);
+        var cutoffMs = weeks < MAX_WEEKS ? Date.now() - weeks * 7 * 24 * 60 * 60 * 1000 : null;
+        var nearby   = ALL_DATA.filter(function (d) {
+          return haversine(r.lat, r.lng, d.lat, d.lng) <= RADIUS_KM;
+        });
+        var allCases = [];
+        nearby.forEach(function (d) {
+          var fc = cutoffMs ? d.cases.filter(function (c) { return c.dateMs && c.dateMs >= cutoffMs; }) : d.cases;
+          allCases = allCases.concat(fc);
+        });
+        allCases.sort(function (a, b) { return (b.dateMs || 0) - (a.dateMs || 0); });
+        var multi = nearby.length > 1;
+        if (ACTIVE_VIEW !== 'app') setView('app');
+        openSidebarApp(allCases, r.pc, multi ? r.city + ' & surrounding suburbs' : r.city, r.state,
+          multi ? 'Applications within ' + RADIUS_KM + ' km' : 'Applications from this community');
+      }, 700);
+    }
+
+    inp.addEventListener('input', function () {
+      var q = this.value;
+      clear.style.display = q ? 'block' : 'none';
+      icon.style.display  = q ? 'none'  : 'block';
+      idx = -1;
+      res = search(q);
+      if (!q) { drop.style.display = 'none'; inp.setAttribute('aria-expanded', 'false'); return; }
+      renderDrop(res);
+    });
+
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); idx = Math.min(idx + 1, res.length - 1); renderDrop(res); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); idx = Math.max(idx - 1, -1); renderDrop(res); }
+      else if (e.key === 'Enter') { e.preventDefault(); var i = idx >= 0 ? idx : 0; if (res[i]) selectResult(res[i]); }
+      else if (e.key === 'Escape') { drop.style.display = 'none'; inp.setAttribute('aria-expanded', 'false'); inp.blur(); }
+    });
+
+    drop.addEventListener('click', function (e) {
+      var item = e.target.closest('.search-item');
+      if (!item) return;
+      var i = parseInt(item.dataset.i);
+      if (res[i]) selectResult(res[i]);
+    });
+
+    clear.addEventListener('click', function () {
+      inp.value = '';
+      clear.style.display = 'none';
+      icon.style.display  = 'block';
+      drop.style.display  = 'none';
+      inp.setAttribute('aria-expanded', 'false');
+      res = []; idx = -1;
+      inp.focus();
+    });
+
+    document.addEventListener('click', function (e) {
+      if (!document.getElementById('search-wrap').contains(e.target)) {
+        drop.style.display = 'none';
+        inp.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
+})();
+</script>
+
+<noscript>
+  <style>#app,#progress,#mob-pill{display:none}</style>
+  <div style="font-family:sans-serif;padding:40px;text-align:center;max-width:500px;margin:0 auto">
+    <h1>NZF Community Need Map</h1>
+    <p style="margin-top:16px;color:#555">
+      This interactive map requires JavaScript to display. Please enable JavaScript in your browser, or visit
+      <a href="https://nzf.org.au">nzf.org.au</a> for more information about NZF's programs.
+    </p>
+  </div>
+</noscript>
+
+</body>
+</html>
