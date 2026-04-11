@@ -163,31 +163,38 @@ Good examples:
 
 async function generateSummary(description) {
   if (!process.env.ANTHROPIC_API_KEY) {
-    return null; // Caller should use keyword fallback
+    return null;
   }
   if (!description || description.trim().length < 20) {
-    return 'Person in financial difficulty and asking for help covering basic costs.'; {
+    return 'Person in financial difficulty and asking for help covering basic costs.';
+  }
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method:  'POST',
       headers: {
-        'Content-Type':         'application/json',
-        'x-api-key':            process.env.ANTHROPIC_API_KEY,
-        'anthropic-version':    '2023-06-01',
+        'Content-Type':      'application/json',
+        'x-api-key':         process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
         model:      'claude-sonnet-4-6',
         max_tokens: 150,
         system:     SUMMARY_SYSTEM_PROMPT,
-        messages:   [{ role: 'user', content: `Application description:\n${description.slice(0, 1500)}` }],
+        messages:   [{ role: 'user', content: 'Application description:\n' + description.slice(0, 1500) }],
       }),
     });
 
     if (!resp.ok) {
       const err = await resp.text();
-      throw new Error(`Claude API ${resp.status}: ${err.slice(0, 200)}`);
+      throw new Error('Claude API ' + resp.status + ': ' + err.slice(0, 200));
     }
 
     const data = await resp.json();
-    return (data.content?.[0]?.text || '').trim().replace(/^"|"$/g, '') || null;
+    var arr   = data.content;
+    var block = arr && arr[0];
+    var text  = (block && block.text) ? block.text : '';
+    return text.trim().replace(/^"|"$/g, '') || null;
   } catch (e) {
     console.warn('[transforms] generateSummary failed:', e.message);
     return null;
