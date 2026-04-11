@@ -16,8 +16,8 @@
   node_bundler = "esbuild"
 
 # ── Scheduled daily refresh (4 am AEST = 18:00 UTC) ─────────────────────────
-[functions."refresh-data"]
-  schedule = "15 8 11 4 *"
+[functions."refresh-data-background"]
+  schedule = "0 18 * * *"
 
 # ── Security headers for all responses ───────────────────────────────────────
 [[headers]]
