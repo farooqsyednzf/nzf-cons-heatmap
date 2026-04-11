@@ -109,47 +109,31 @@ async function refreshZohoToken() {
 // ── ANALYTICS VIEW DATA FETCH ─────────────────────────────────────────────────
 // Non-bulk API: GET /workspaces/{wsId}/views/{viewId}/data
 // Paginates automatically. Works with ZohoAnalytics.data.read scope.
-async function fetchAllViewRows(viewId, extraConfig) {
-  const rows    = [];
-  const pageSize = 10000;
-  let offset    = 0;
-  let hasMore   = true;
+async function fetchAllViewRows(viewId) {
+  // The Zoho Analytics view data endpoint returns all rows in a single call.
+  // Only responseFormat is accepted in CONFIG — no pagination parameters.
+  const cfg  = encodeURIComponent(JSON.stringify({ responseFormat: 'csv' }));
+  const url  = `${ZOHO_ANALYTICS_BASE}/workspaces/${ZOHO_WS_ID}/views/${viewId}/data?CONFIG=${cfg}`;
+  const resp = await fetch(url, {
+    headers: {
+      'Authorization':    `Zoho-oauthtoken ${_zohoToken}`,
+      'ZANALYTICS-ORGID': ZOHO_ORG_ID,
+    },
+  });
 
-  while (hasMore) {
-    const cfg = JSON.stringify(Object.assign({
-      responseFormat: 'csv',
-      recordLimit:    pageSize,
-      recordOffset:   offset,
-    }, extraConfig || {}));
-
-    const url  = `${ZOHO_ANALYTICS_BASE}/workspaces/${ZOHO_WS_ID}/views/${viewId}/data?CONFIG=${encodeURIComponent(cfg)}`;
-    const resp = await fetch(url, {
-      headers: {
-        'Authorization':    `Zoho-oauthtoken ${_zohoToken}`,
-        'ZANALYTICS-ORGID': ZOHO_ORG_ID,
-      },
-    });
-
-    if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(`Analytics view ${viewId} HTTP ${resp.status}: ${err.slice(0, 200)}`);
-    }
-
-    const csv  = await resp.text();
-    const page = parseCsv(csv);
-    rows.push(...page);
-    hasMore  = page.length === pageSize;
-    offset  += pageSize;
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`Analytics view ${viewId} HTTP ${resp.status}: ${err.slice(0, 200)}`);
   }
 
-  return rows;
+  return parseCsv(await resp.text());
 }
 
 // ── CASES + CLIENTS ───────────────────────────────────────────────────────────
 async function fetchCasesFromAnalytics() {
   const [caseRows, clientRows] = await Promise.all([
-    fetchAllViewRows(VIEW_CASES,   {}),
-    fetchAllViewRows(VIEW_CLIENTS, {}),
+    fetchAllViewRows(VIEW_CASES),
+    fetchAllViewRows(VIEW_CLIENTS),
   ]);
 
   // Build client lookup
@@ -201,7 +185,7 @@ async function fetchCasesFromAnalytics() {
 
 // ── DONATIONS ─────────────────────────────────────────────────────────────────
 async function fetchDonationsFromAnalytics() {
-  const rows = await fetchAllViewRows(VIEW_DONATIONS, {});
+  const rows = await fetchAllViewRows(VIEW_DONATIONS);
 
   const out = {};
   rows.forEach(r => {
@@ -225,9 +209,9 @@ async function fetchDonationsFromAnalytics() {
 // Cases.Client Name -> Clients.Mailing Zip to resolve the postcode.
 async function fetchDistributionsFromAnalytics() {
   const [caseRows, clientRows, distRows] = await Promise.all([
-    fetchAllViewRows(VIEW_CASES,         {}),
-    fetchAllViewRows(VIEW_CLIENTS,       {}),
-    fetchAllViewRows(VIEW_DISTRIBUTIONS, {}),
+    fetchAllViewRows(VIEW_CASES),
+    fetchAllViewRows(VIEW_CLIENTS),
+    fetchAllViewRows(VIEW_DISTRIBUTIONS),
   ]);
 
   // Build lookups
