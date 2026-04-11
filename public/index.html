@@ -739,7 +739,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v8';
+  var CACHE_KEY    = 'nzf_map_v9';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
@@ -823,15 +823,6 @@ input[type=range]::-moz-range-thumb {
     var dL = (lat2 - lat1) * r, dG = (lng2 - lng1) * r;
     var a  = Math.sin(dL/2)**2 + Math.cos(lat1*r)*Math.cos(lat2*r)*Math.sin(dG/2)**2;
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  }
-
-  // Get time-windowed totals for a donation/distribution postcode entry.
-  // Server pre-computes 4w, 13w, 26w buckets; 52w falls back to full total.
-  function getWindowedTotals(d, weeks) {
-    if (weeks <= 4)  return { count: d.count_4w  || 0, total: d.total_4w  || 0 };
-    if (weeks <= 13) return { count: d.count_13w || 0, total: d.total_13w || 0 };
-    if (weeks <= 26) return { count: d.count_26w || 0, total: d.total_26w || 0 };
-    return               { count: d.count       || 0, total: d.total       || 0 };
   }
 
   // Map distribution subject field to human-readable need
@@ -978,10 +969,12 @@ input[type=range]::-moz-range-thumb {
         'National Zakat Foundation Australia \u00B7 Updated ' + fmtRelative(data.generatedAt);
     }
 
-    // Donations layer
+    // Donations layer — compute initial cutoffMs same as updateSlider
     if (Object.keys(ALL_DONATIONS).length > 0) {
       DATA_READY.don = true;
-      renderDonLayer();
+      var initCutoffMs = parseInt(slider.value) < MAX_WEEKS
+        ? Date.now() - parseInt(slider.value) * 7 * 24 * 60 * 60 * 1000 : null;
+      renderDonLayer(initCutoffMs);
       enableToggle('don');
     } else {
       disableToggle('don', 'Donations data not yet available');
@@ -990,7 +983,7 @@ input[type=range]::-moz-range-thumb {
     // Distributions layer
     if (Object.keys(ALL_DISTRIB).length > 0) {
       DATA_READY.dis = true;
-      renderDisLayer();
+      renderDisLayer(initCutoffMs);
       enableToggle('dis');
     } else {
       disableToggle('dis', 'Distributions data not yet available');
@@ -1060,59 +1053,76 @@ input[type=range]::-moz-range-thumb {
   }
 
   // ─── DONATION MARKERS ──────────────────────────────────────────────────────
-  function renderDonLayer(weeks) {
-    var w = weeks !== undefined ? weeks : parseInt(slider.value);
+  // Identical logic to renderMarkers: filter by cutoffMs, size by filtered total.
+  function renderDonLayer(cutoffMs) {
     donLayer.clearLayers();
     Object.keys(ALL_DONATIONS).forEach(function (pc) {
-      var d    = ALL_DONATIONS[pc];
-      var loc  = PC_LOOKUP[pc];
-      if (!loc) return;
-      var wt   = getWindowedTotals(d, w);
-      if (!wt.total) return; // nothing in this window
-      var cm   = L.circleMarker([loc.lat, loc.lng], {
-        radius: grMoney(wt.total), fillColor: COL.DON,
-        color: 'rgba(8,80,65,.4)', weight: 1.5, opacity: 1,
-        fillOpacity: goMoney(wt.total),
+      var d   = ALL_DONATIONS[pc];
+      var loc = PC_LOOKUP[pc];
+      if (!loc || !loc.lat || !loc.lng) return;
+
+      var items = cutoffMs
+        ? (d.items || []).filter(function (it) { return it.dateMs && it.dateMs >= cutoffMs; })
+        : (d.items || []);
+      if (!items.length) return;
+
+      var filteredTotal = items.reduce(function (s, it) { return s + it.amount; }, 0);
+      var cm = L.circleMarker([loc.lat, loc.lng], {
+        radius:      grMoney(filteredTotal),
+        fillColor:   COL.DON,
+        color:       'rgba(8,80,65,.4)',
+        weight:      1.5, opacity: 1,
+        fillOpacity: goMoney(filteredTotal),
       });
-      var wLabel = w < 52 ? 'last ' + w + ' wks' : 'since 2025';
       cm.bindTooltip(
         '<strong>' + pc + '</strong>, ' + loc.city + ', ' + loc.state +
-        '<br><span style="color:' + COL.DON + ';font-weight:700;">' + fmtMoney(wt.total) + ' donated</span>' +
-        '<br><span style="color:#888;font-size:11px;">' + wt.count.toLocaleString() + ' donations · ' + wLabel + '</span>',
+        '<br><span style="color:' + COL.DON + ';font-weight:700;">' + fmtMoney(filteredTotal) + ' donated</span>' +
+        '<br><span style="color:#888;font-size:11px;">' + items.length.toLocaleString() + ' donation' + (items.length !== 1 ? 's' : '') + '</span>',
         { direction: 'top', offset: [0, -8] }
       );
-      cm.on('click', (function (p, dd, ll, wtc) {
-        return function (e) { L.DomEvent.stopPropagation(e); openSidebarMoney('don', p, ll, dd, wtc); };
-      })(pc, d, loc, wt));
+      cm.on('click', (function (capItems, capPc, capLoc) {
+        return function (e) {
+          L.DomEvent.stopPropagation(e);
+          openSidebarItems('don', capItems, capPc, capLoc);
+        };
+      })(items, pc, loc));
       donLayer.addLayer(cm);
     });
   }
 
   // ─── DISTRIBUTION MARKERS ──────────────────────────────────────────────────
-  function renderDisLayer(weeks) {
-    var w = weeks !== undefined ? weeks : parseInt(slider.value);
+  function renderDisLayer(cutoffMs) {
     disLayer.clearLayers();
     Object.keys(ALL_DISTRIB).forEach(function (pc) {
-      var d    = ALL_DISTRIB[pc];
-      var loc  = PC_LOOKUP[pc];
-      if (!loc) return;
-      var wt   = getWindowedTotals(d, w);
-      if (!wt.total) return; // nothing in this window
-      var cm   = L.circleMarker([loc.lat, loc.lng], {
-        radius: grMoney(wt.total), fillColor: COL.DIS,
-        color: 'rgba(4,44,83,.4)', weight: 1.5, opacity: 1,
-        fillOpacity: goMoney(wt.total),
+      var d   = ALL_DISTRIB[pc];
+      var loc = PC_LOOKUP[pc];
+      if (!loc || !loc.lat || !loc.lng) return;
+
+      var items = cutoffMs
+        ? (d.items || []).filter(function (it) { return it.dateMs && it.dateMs >= cutoffMs; })
+        : (d.items || []);
+      if (!items.length) return;
+
+      var filteredTotal = items.reduce(function (s, it) { return s + it.amount; }, 0);
+      var cm = L.circleMarker([loc.lat, loc.lng], {
+        radius:      grMoney(filteredTotal),
+        fillColor:   COL.DIS,
+        color:       'rgba(4,44,83,.4)',
+        weight:      1.5, opacity: 1,
+        fillOpacity: goMoney(filteredTotal),
       });
-      var wLabel = w < 52 ? 'last ' + w + ' wks' : 'since 2025';
       cm.bindTooltip(
         '<strong>' + pc + '</strong>, ' + loc.city + ', ' + loc.state +
-        '<br><span style="color:' + COL.DIS + ';font-weight:700;">' + fmtMoney(wt.total) + ' distributed</span>' +
-        '<br><span style="color:#888;font-size:11px;">' + wt.count.toLocaleString() + ' distributions · ' + wLabel + '</span>',
+        '<br><span style="color:' + COL.DIS + ';font-weight:700;">' + fmtMoney(filteredTotal) + ' distributed</span>' +
+        '<br><span style="color:#888;font-size:11px;">' + items.length.toLocaleString() + ' distribution' + (items.length !== 1 ? 's' : '') + '</span>',
         { direction: 'top', offset: [0, -8] }
       );
-      cm.on('click', (function (p, dd, ll, wtc) {
-        return function (e) { L.DomEvent.stopPropagation(e); openSidebarMoney('dis', p, ll, dd, wtc); };
-      })(pc, d, loc, wt));
+      cm.on('click', (function (capItems, capPc, capLoc) {
+        return function (e) {
+          L.DomEvent.stopPropagation(e);
+          openSidebarItems('dis', capItems, capPc, capLoc);
+        };
+      })(items, pc, loc));
       disLayer.addLayer(cm);
     });
   }
@@ -1170,17 +1180,31 @@ input[type=range]::-moz-range-thumb {
         bg: 'var(--c-brand-pale)', border: '#f0c0c3' });
     }
     if (ACTIVE_VIEWS.don && DATA_READY.don) {
-      var dw = parseInt(slider.value);
-      var donTotal = Object.values(ALL_DONATIONS).reduce(function(s,d){return s+getWindowedTotals(d,dw).total;},0);
-      var wlbl = dw < MAX_WEEKS ? 'last '+dw+'wks' : 'since 2025';
-      active.push({ val: fmtMoney(donTotal), col: COL.DON, lbl: 'donated', pill: wlbl,
+      var dcWeeks = parseInt(slider.value);
+      var dcCutoff = dcWeeks < MAX_WEEKS ? Date.now() - dcWeeks * 7 * 24 * 60 * 60 * 1000 : null;
+      var donTotal = 0;
+      Object.values(ALL_DONATIONS).forEach(function(d) {
+        var filtered = dcCutoff
+          ? (d.items || []).filter(function(it) { return it.dateMs && it.dateMs >= dcCutoff; })
+          : (d.items || []);
+        filtered.forEach(function(it) { donTotal += it.amount; });
+      });
+      var donWlbl = dcWeeks < MAX_WEEKS ? 'last ' + dcWeeks + 'wks' : 'since 2025';
+      active.push({ val: fmtMoney(donTotal), col: COL.DON, lbl: 'donated', pill: donWlbl,
         bg: 'var(--c-don-pale)', border: '#9FE1CB' });
     }
     if (ACTIVE_VIEWS.dis && DATA_READY.dis) {
-      var dw2 = parseInt(slider.value);
-      var disTotal = Object.values(ALL_DISTRIB).reduce(function(s,d){return s+getWindowedTotals(d,dw2).total;},0);
-      var wlbl2 = dw2 < MAX_WEEKS ? 'last '+dw2+'wks' : 'since 2025';
-      active.push({ val: fmtMoney(disTotal), col: COL.DIS, lbl: 'distributed', pill: wlbl2,
+      var dcWeeks2 = parseInt(slider.value);
+      var dcCutoff2 = dcWeeks2 < MAX_WEEKS ? Date.now() - dcWeeks2 * 7 * 24 * 60 * 60 * 1000 : null;
+      var disTotal = 0;
+      Object.values(ALL_DISTRIB).forEach(function(d) {
+        var filtered = dcCutoff2
+          ? (d.items || []).filter(function(it) { return it.dateMs && it.dateMs >= dcCutoff2; })
+          : (d.items || []);
+        filtered.forEach(function(it) { disTotal += it.amount; });
+      });
+      var disWlbl = dcWeeks2 < MAX_WEEKS ? 'last ' + dcWeeks2 + 'wks' : 'since 2025';
+      active.push({ val: fmtMoney(disTotal), col: COL.DIS, lbl: 'distributed', pill: disWlbl,
         bg: 'var(--c-dis-pale)', border: '#B5D4F4' });
     }
 
@@ -1281,32 +1305,32 @@ input[type=range]::-moz-range-thumb {
     openSidebar();
   }
 
-  function openSidebarMoney(mode, pc, loc, data, wt) {
-    var isDon = mode === 'don';
-    var col   = isDon ? COL.DON : COL.DIS;
-    // wt = windowed totals from the current slider position (optional)
-    var displayCount = (wt && wt.count !== undefined) ? wt.count : data.count;
-    var displayTotal = (wt && wt.total !== undefined) ? wt.total : data.total;
+  // ─── UNIFIED SIDEBAR FOR DONATIONS + DISTRIBUTIONS ──────────────────────────
+  // Same card format as openSidebarApp. mode = 'don' or 'dis'.
+  function openSidebarItems(mode, items, pc, loc) {
+    var isDon  = mode === 'don';
+    var col    = isDon ? COL.DON : COL.DIS;
+    var label  = isDon ? 'donated from this area' : 'distributed to this area';
+    var secLbl = isDon ? 'Donations from this community' : 'Distributions to this community';
+    var total  = items.reduce(function (s, it) { return s + it.amount; }, 0);
+
     document.getElementById('sb-head').className    = 'sb-head mode-' + mode;
     document.getElementById('sb-pc').textContent    = pc;
-    document.getElementById('sb-sub').textContent   = loc.city + (loc.state ? ', ' + loc.state : '');
-    document.getElementById('sb-n').textContent     = fmtMoney(displayTotal);
-    document.getElementById('sb-badge-lbl').textContent = isDon ? 'donated from this area' : 'distributed to this area';
+    document.getElementById('sb-sub').textContent   = (loc.city || '') + (loc.state ? ', ' + loc.state : '');
+    document.getElementById('sb-n').textContent     = fmtMoney(total);
+    document.getElementById('sb-badge-lbl').textContent = label;
 
     var lbl = document.getElementById('sb-section-label');
-    lbl.textContent = isDon ? 'Donation summary' : 'Distribution summary';
+    lbl.textContent = secLbl;
     lbl.className   = 'sb-section-label ' + (isDon ? 'lbl-don' : 'lbl-dis');
 
     updateSbStats(pc);
 
-    var weeks = parseInt(slider.value);
-    var cutoffMs = weeks < MAX_WEEKS ? Date.now() - weeks * 7 * 24 * 60 * 60 * 1000 : null;
-    var visibleItems = data.items ? data.items.filter(function(it) {
-      return !cutoffMs || !it.dateMs || it.dateMs >= cutoffMs;
-    }) : [];
-    var itemsHtml = '';
-    if (visibleItems.length) {
-      itemsHtml = visibleItems.map(function(item) {
+    var el = document.getElementById('sb-cases');
+    if (!items.length) {
+      el.innerHTML = '<div class="sb-empty">No ' + (isDon ? 'donations' : 'distributions') + ' in this time period.</div>';
+    } else {
+      el.innerHTML = items.map(function (item) {
         var summary = isDon
           ? fmtMoney(item.amount) + ' of Zakat donated'
           : fmtMoney(item.amount) + ' of Zakat distributed towards ' + fmtDisSubject(item.subject);
@@ -1317,16 +1341,6 @@ input[type=range]::-moz-range-thumb {
           + '</div>';
       }).join('');
     }
-    var wLabel = weeks < MAX_WEEKS ? 'last ' + weeks + ' wks' : 'since 2025';
-    document.getElementById('sb-cases').innerHTML =
-      '<div class="money-block">'
-      + '<div class="money-row"><span class="money-lbl">' + (isDon ? 'Total donated' : 'Total distributed') + '</span>'
-      + '<span class="money-val" style="color:' + col + '">' + fmtMoney(displayTotal) + '</span></div>'
-      + '<div class="money-row"><span class="money-lbl">' + (isDon ? 'Number of donations' : 'Number of distributions') + '</span>'
-      + '<span class="money-val">' + displayCount.toLocaleString() + '</span></div>'
-      + '</div>'
-      + (itemsHtml ? '<div class="sb-section-label ' + (isDon ? 'lbl-don' : 'lbl-dis') + '">Recent ' + (isDon ? 'donations' : 'distributions') + '</div>' + itemsHtml : '')
-      + '<div class="sb-note">' + wLabel + ' \u00B7 showing ' + displayCount + ' ' + (isDon?'donations':'distributions') + '</div>';
     openSidebar();
   }
 
@@ -1358,9 +1372,9 @@ input[type=range]::-moz-range-thumb {
       sliderPil.textContent = 'All data';
     }
     renderMarkers(cutoffMs);
-    // Re-render donation + distribution layers with the updated time window
-    if (DATA_READY.don && ACTIVE_VIEWS.don) renderDonLayer(weeks);
-    if (DATA_READY.dis && ACTIVE_VIEWS.dis) renderDisLayer(weeks);
+    // Re-render donation + distribution layers — pass same cutoffMs as applications
+    if (DATA_READY.don) renderDonLayer(cutoffMs);
+    if (DATA_READY.dis) renderDisLayer(cutoffMs);
     updateCounter();
   }
   slider.addEventListener('input', updateSlider);
@@ -1462,11 +1476,20 @@ input[type=range]::-moz-range-thumb {
         if (allCases.length > 0) {
           openSidebarApp(allCases, r.pc, cityLbl, r.state, areaLbl);
         } else {
+          var loc = PC_LOOKUP[r.pc] || r;
           var don = ALL_DONATIONS[r.pc];
           var dis = ALL_DISTRIB[r.pc];
-          var loc = PC_LOOKUP[r.pc] || r;
-          if (don) openSidebarMoney('don', r.pc, loc, don);
-          else if (dis) openSidebarMoney('dis', r.pc, loc, dis);
+          if (don) {
+            var donItems = cutoffMs
+              ? (don.items || []).filter(function(it) { return it.dateMs && it.dateMs >= cutoffMs; })
+              : (don.items || []);
+            openSidebarItems('don', donItems, r.pc, loc);
+          } else if (dis) {
+            var disItems = cutoffMs
+              ? (dis.items || []).filter(function(it) { return it.dateMs && it.dateMs >= cutoffMs; })
+              : (dis.items || []);
+            openSidebarItems('dis', disItems, r.pc, loc);
+          }
         }
       }, 700);
     }
