@@ -386,6 +386,17 @@ input[type=range]::-moz-range-thumb {
 
 /* 3-metric summary */
 .sb-stats { display: flex; gap: 7px; margin-bottom: 14px; }
+/* Clickable stat tiles */
+.sb-tab {
+  cursor: pointer;
+  transition: transform .15s, box-shadow .15s, border-color .15s;
+  user-select: none;
+}
+.sb-tab:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,.13); }
+.sb-tab:active { transform: translateY(0); }
+.s-app.sb-tab-active { border-color: var(--c-brand) !important; }
+.s-don.sb-tab-active { border-color: var(--c-don) !important; }
+.s-dis.sb-tab-active { border-color: var(--c-dis) !important; }
 .sb-stat {
   flex: 1; background: var(--c-bg); border: 1px solid var(--c-border);
   border-radius: 8px; padding: 8px 6px; text-align: center;
@@ -739,7 +750,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v13';
+  var CACHE_KEY    = 'nzf_map_v14';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
@@ -754,7 +765,14 @@ input[type=range]::-moz-range-thumb {
   var ALL_DATA      = []; // postcodes with cases
   var ALL_DONATIONS = {};
   var ALL_DISTRIB   = {};
-  var SB_STATE = { pc: null, loc: null, weeks: 52 }; // sidebar state for tab switching
+  // Sidebar state — single source of truth for all three tabs
+  var SB_STATE = {
+    pc: null, loc: null, weeks: 52, cutoffMs: null,
+    nearbyPcs: [], useRadius: false,
+    appCases: [], appLabel: '', cityLabel: '',
+    donTotal: 0, donItems: [],
+    disTotal: 0, disItems: [],
+  };
   var PC_LOOKUP     = {}; // postcode → { lat, lng, city, state }
   var ACTIVE_VIEWS  = { app: true, don: true, dis: true };
   var DATA_READY    = { app: false, don: false, dis: false };
@@ -869,9 +887,10 @@ input[type=range]::-moz-range-thumb {
     }
   ).addTo(map);
 
-  var markerLayer = L.layerGroup().addTo(map);
-  var donLayer    = L.layerGroup().addTo(map);
-  var disLayer    = L.layerGroup().addTo(map);
+  var markerLayer   = L.layerGroup().addTo(map);
+  var donLayer      = L.layerGroup().addTo(map);
+  var disLayer      = L.layerGroup().addTo(map);
+  var highlightLayer = L.layerGroup().addTo(map); // search radius highlight ring
 
   // ─── CACHE (localStorage, 23h TTL) ─────────────────────────────────────────
   function loadCache() {
@@ -908,6 +927,32 @@ input[type=range]::-moz-range-thumb {
     var mode = tile.id.replace('sb-tab-', '');
     sbTabClick(mode);
   });
+
+  // ─── SEARCH HIGHLIGHT ──────────────────────────────────────────────────────
+  // When user searches, draw a subtle ring around the matched postcodes
+  function showSearchHighlight(centerLoc, nearbyPcs) {
+    highlightLayer.clearLayers();
+    if (!centerLoc || !centerLoc.lat) return;
+    // Draw a translucent radius circle
+    L.circle([centerLoc.lat, centerLoc.lng], {
+      radius: RADIUS_KM * 1000,
+      color: '#888', weight: 1.5, opacity: 0.5,
+      fill: true, fillColor: '#aaa', fillOpacity: 0.06,
+      dashArray: '6 4',
+    }).addTo(highlightLayer);
+    // Pulse rings on matched postcodes
+    nearbyPcs.forEach(function(pc) {
+      var loc = PC_LOOKUP[pc];
+      if (!loc || !loc.lat) return;
+      L.circleMarker([loc.lat, loc.lng], {
+        radius: 10, color: '#555', weight: 1.5,
+        fill: false, opacity: 0.4,
+      }).addTo(highlightLayer);
+    });
+  }
+  function clearSearchHighlight() {
+    highlightLayer.clearLayers();
+  }
 
   // ─── BOOT ──────────────────────────────────────────────────────────────────
   var cached = loadCache();
@@ -1054,13 +1099,9 @@ input[type=range]::-moz-range-thumb {
         { direction: 'top', offset: [0, -8] }
       );
 
-      cm.on('click', (function (caps, capd) {
-        return function (e) {
-          L.DomEvent.stopPropagation(e);
-          var sorted = caps.slice().sort(function (a, b) { return (b.dateMs || 0) - (a.dateMs || 0); });
-          openSidebarApp(sorted, capd.pc, capd.city, capd.state);
-        };
-      })(cases, d));
+      cm.on('click', (function (capPc) {
+        return function (e) { L.DomEvent.stopPropagation(e); openSidebarForPc(capPc, false, 'app'); };
+      })(d.pc));
 
       markerLayer.addLayer(cm);
     });
@@ -1099,16 +1140,9 @@ input[type=range]::-moz-range-thumb {
         '<br><span style="color:#888;font-size:11px;">' + wLabel + '</span>',
         { direction: 'top', offset: [0, -8] }
       );
-      // For sidebar: show top-20 items filtered to the current time window
-      var displayItems = cutoffMs
-        ? (d.items || []).filter(function (it) { return it.dateMs && it.dateMs >= cutoffMs; })
-        : (d.items || []);
-      cm.on('click', (function (capItems, capPc, capLoc) {
-        return function (e) {
-          L.DomEvent.stopPropagation(e);
-          openSidebarItems('don', capItems, capPc, capLoc);
-        };
-      })(displayItems, pc, loc));
+      cm.on('click', (function (capPc) {
+        return function (e) { L.DomEvent.stopPropagation(e); openSidebarForPc(capPc, false, 'don'); };
+      })(pc));
       donLayer.addLayer(cm);
     });
   }
@@ -1141,15 +1175,9 @@ input[type=range]::-moz-range-thumb {
         '<br><span style="color:#888;font-size:11px;">' + wLabel + '</span>',
         { direction: 'top', offset: [0, -8] }
       );
-      var displayItems = cutoffMs
-        ? (d.items || []).filter(function (it) { return it.dateMs && it.dateMs >= cutoffMs; })
-        : (d.items || []);
-      cm.on('click', (function (capItems, capPc, capLoc) {
-        return function (e) {
-          L.DomEvent.stopPropagation(e);
-          openSidebarItems('dis', capItems, capPc, capLoc);
-        };
-      })(displayItems, pc, loc));
+      cm.on('click', (function (capPc) {
+        return function (e) { L.DomEvent.stopPropagation(e); openSidebarForPc(capPc, false, 'dis'); };
+      })(pc));
       disLayer.addLayer(cm);
     });
   }
@@ -1275,94 +1303,178 @@ input[type=range]::-moz-range-thumb {
     sidebar.classList.remove('open');
     sidebar.setAttribute('aria-hidden', 'true');
     backdrop.classList.remove('visible');
+    clearSearchHighlight();
   }
 
-  function updateSbStats(pc, appCountOverride) {
-    var appCount = appCountOverride !== undefined ? appCountOverride
-      : (function () {
-          var d = ALL_DATA.filter(function (x) { return x.pc === pc; })[0];
-          return d ? d.cases.length : 0;
-        })();
-    var don = ALL_DONATIONS[pc];
-    var dis = ALL_DISTRIB[pc];
-    document.getElementById('sb-s-app').textContent = appCount > 0 ? appCount : '—';
-    document.getElementById('sb-s-don').textContent = don ? fmtMoney(don.total) : (DATA_READY.don ? '—' : '…');
-    document.getElementById('sb-s-dis').textContent = dis ? fmtMoney(dis.total) : (DATA_READY.dis ? '—' : '…');
+  // updateSbStats: reads entirely from SB_STATE — always time-filtered, always radius-consistent
+  function updateSbStats() {
+    var n = SB_STATE.appCases.length;
+    document.getElementById('sb-s-app').textContent = n > 0 ? n : '—';
+    document.getElementById('sb-s-don').textContent = SB_STATE.donTotal > 0
+      ? fmtMoney(SB_STATE.donTotal) : (DATA_READY.don ? '—' : '…');
+    document.getElementById('sb-s-dis').textContent = SB_STATE.disTotal > 0
+      ? fmtMoney(SB_STATE.disTotal) : (DATA_READY.dis ? '—' : '…');
   }
 
+  // Legacy entry points — kept for marker click handlers.
+  // Both delegate to openSidebarForPc for consistency.
   function openSidebarApp(cases, pc, city, state, areaLabel) {
-    SB_STATE.pc = pc; SB_STATE.loc = PC_LOOKUP[pc] || { city: city, state: state }; SB_STATE.weeks = parseInt(slider.value);
-    sbActivateTab('app');
-    document.getElementById('sb-head').className = 'sb-head';
-    document.getElementById('sb-pc').textContent  = pc;
-    document.getElementById('sb-sub').textContent = city + (state ? ', ' + state : '');
-    document.getElementById('sb-n').textContent   = cases.length;
-    document.getElementById('sb-badge-lbl').textContent = 'applications this period';
+    openSidebarForPc(pc, false, 'app');
+  }
+  function openSidebarItems(mode, items, pc, loc) {
+    openSidebarForPc(pc, false, mode);
+  }
 
-    var lbl = document.getElementById('sb-section-label');
-    lbl.textContent = areaLabel || 'Applications from this community';
-    lbl.className   = 'sb-section-label';
+  // ─── SIDEBAR CORE ─────────────────────────────────────────────────────────
+  // computeSbContext: builds SB_STATE from a postcode + optional radius flag.
+  // Called once per sidebar open; tab switches reuse SB_STATE without recomputing.
+  function computeSbContext(pc, useRadius) {
+    var weeks    = parseInt(slider.value);
+    var cutoffMs = weeks < MAX_WEEKS ? Date.now() - weeks*7*24*60*60*1000 : null;
+    var loc      = PC_LOOKUP[pc] || {};
 
-    updateSbStats(pc, cases.length);
-
-    var el = document.getElementById('sb-cases');
-    if (!cases.length) {
-      el.innerHTML = '<div class="sb-empty">No applications in this time period.</div>';
-    } else {
-      el.innerHTML = cases.map(function (c) {
-        var tags = (c.t || [])
-          .map(function (t) { return '<span class="tag">' + esc(t) + '</span>'; })
-          .join('');
-        var dt = fmtDate(c.dateMs);
-        return '<div class="ccard" role="listitem">'
-          + '<div class="ccard-summary">' + esc(c.s) + '</div>'
-          + (tags ? '<div class="tags">' + tags + '</div>' : '')
-          + (dt ? '<div class="ccard-date">&#128197; ' + dt + '</div>' : '')
-          + '</div>';
-      }).join('');
+    // Which postcodes to aggregate over
+    var nearbyPcs = [pc];
+    if (useRadius && loc.lat && loc.lng) {
+      Object.keys(PC_LOOKUP).forEach(function(p) {
+        if (p === pc) return;
+        var l = PC_LOOKUP[p];
+        if (l && l.lat && haversine(loc.lat, loc.lng, l.lat, l.lng) <= RADIUS_KM) nearbyPcs.push(p);
+      });
     }
+
+    // Applications
+    var appCases = [];
+    nearbyPcs.forEach(function(p) {
+      var d = ALL_DATA.filter(function(x){return x.pc===p;})[0];
+      if (!d) return;
+      var fc = cutoffMs ? d.cases.filter(function(c){return c.dateMs&&c.dateMs>=cutoffMs;}) : d.cases;
+      appCases = appCases.concat(fc);
+    });
+    appCases.sort(function(a,b){return (b.dateMs||0)-(a.dateMs||0);});
+
+    // Donations — wt[] for accurate total, items for display cards
+    var donTotal = 0;
+    var donItems = [];
+    nearbyPcs.forEach(function(p) {
+      var d = ALL_DONATIONS[p]; if (!d) return;
+      donTotal += cutoffMs ? ((d.wt||[])[weeks-1]||0) : (d.total||0);
+      var its = cutoffMs
+        ? (d.items||[]).filter(function(it){return it.dateMs&&it.dateMs>=cutoffMs;})
+        : (d.items||[]);
+      donItems = donItems.concat(its);
+    });
+    donItems.sort(function(a,b){return (b.dateMs||0)-(a.dateMs||0);});
+
+    // Distributions — same pattern
+    var disTotal = 0;
+    var disItems = [];
+    nearbyPcs.forEach(function(p) {
+      var d = ALL_DISTRIB[p]; if (!d) return;
+      disTotal += cutoffMs ? ((d.wt||[])[weeks-1]||0) : (d.total||0);
+      var its = cutoffMs
+        ? (d.items||[]).filter(function(it){return it.dateMs&&it.dateMs>=cutoffMs;})
+        : (d.items||[]);
+      disItems = disItems.concat(its);
+    });
+    disItems.sort(function(a,b){return (b.dateMs||0)-(a.dateMs||0);});
+
+    var multi = nearbyPcs.length > 1;
+    SB_STATE = {
+      pc:        pc,
+      loc:       loc,
+      weeks:     weeks,
+      cutoffMs:  cutoffMs,
+      nearbyPcs: nearbyPcs,
+      useRadius: useRadius,
+      appCases:  appCases,
+      appLabel:  multi ? 'Applications within '+RADIUS_KM+' km' : 'Applications from this community',
+      cityLabel: multi ? (loc.city||pc)+' & surrounding suburbs' : (loc.city||pc),
+      donTotal:  Math.round(donTotal*100)/100,
+      donItems:  donItems,
+      disTotal:  Math.round(disTotal*100)/100,
+      disItems:  disItems,
+    };
+  }
+
+  // openSidebarForPc: entry point for both map clicks and search
+  function openSidebarForPc(pc, useRadius, preferTab) {
+    computeSbContext(pc, !!useRadius);
+    if (!useRadius) clearSearchHighlight();
+    var tab = preferTab || (SB_STATE.appCases.length ? 'app' : SB_STATE.donTotal ? 'don' : 'dis');
+    sbShowTab(tab);
     openSidebar();
   }
 
-  // ─── UNIFIED SIDEBAR FOR DONATIONS + DISTRIBUTIONS ──────────────────────────
-  // Same card format as openSidebarApp. mode = 'don' or 'dis'.
-  function openSidebarItems(mode, items, pc, loc) {
-    SB_STATE.pc = pc; SB_STATE.loc = loc; SB_STATE.weeks = parseInt(slider.value);
+  // sbShowTab: renders the card list for the active tab.
+  // Reads entirely from SB_STATE — never recomputes.
+  function sbShowTab(mode) {
     sbActivateTab(mode);
-    var isDon  = mode === 'don';
-    var col    = isDon ? COL.DON : COL.DIS;
-    var label  = isDon ? 'donated from this area' : 'distributed to this area';
-    var secLbl = isDon ? 'Donations from this community' : 'Distributions to this community';
-    var total  = items.reduce(function (s, it) { return s + it.amount; }, 0);
+    var loc = SB_STATE.loc;
+    document.getElementById('sb-pc').textContent  = SB_STATE.pc;
+    document.getElementById('sb-sub').textContent = SB_STATE.cityLabel + (loc.state ? ', '+loc.state : '');
+    updateSbStats();
 
-    document.getElementById('sb-head').className    = 'sb-head mode-' + mode;
-    document.getElementById('sb-pc').textContent    = pc;
-    document.getElementById('sb-sub').textContent   = (loc.city || '') + (loc.state ? ', ' + loc.state : '');
-    document.getElementById('sb-n').textContent     = fmtMoney(total);
-    document.getElementById('sb-badge-lbl').textContent = label;
-
+    var el  = document.getElementById('sb-cases');
     var lbl = document.getElementById('sb-section-label');
-    lbl.textContent = secLbl;
-    lbl.className   = 'sb-section-label ' + (isDon ? 'lbl-don' : 'lbl-dis');
 
-    updateSbStats(pc);
+    if (mode === 'app') {
+      var n = SB_STATE.appCases.length;
+      document.getElementById('sb-head').className    = 'sb-head';
+      document.getElementById('sb-n').textContent     = n;
+      document.getElementById('sb-badge-lbl').textContent = 'applications this period';
+      lbl.textContent = SB_STATE.appLabel;
+      lbl.className   = 'sb-section-label';
+      el.innerHTML = n ? SB_STATE.appCases.map(function(c) {
+        var tags=(c.t||[]).map(function(t){return '<span class="tag">'+esc(t)+'</span>';}).join('');
+        var dt=fmtDate(c.dateMs);
+        return '<div class="ccard" role="listitem">'+
+          '<div class="ccard-summary">'+esc(c.s)+'</div>'+
+          (tags?'<div class="tags">'+tags+'</div>':'')+
+          (dt?'<div class="ccard-date">&#128197; '+dt+'</div>':'')+
+          '</div>';
+      }).join('') : '<div class="sb-empty">No applications in this time period.</div>';
 
-    var el = document.getElementById('sb-cases');
-    if (!items.length) {
-      el.innerHTML = '<div class="sb-empty">No ' + (isDon ? 'donations' : 'distributions') + ' in this time period.</div>';
-    } else {
-      el.innerHTML = items.map(function (item) {
-        var summary = isDon
-          ? fmtMoney(item.amount) + ' of Zakat donated'
-          : fmtMoney(item.amount) + ' of Zakat distributed towards ' + fmtDisSubject(item.subject);
-        var dt = fmtDate(item.dateMs);
-        return '<div class="ccard" role="listitem">'
-          + '<div class="ccard-summary">' + esc(summary) + '</div>'
-          + (dt ? '<div class="ccard-date">&#128197; ' + dt + '</div>' : '')
-          + '</div>';
-      }).join('');
+    } else if (mode === 'don') {
+      var donItems = SB_STATE.donItems;
+      var donTotal = SB_STATE.donTotal;
+      document.getElementById('sb-head').className    = 'sb-head mode-don';
+      document.getElementById('sb-n').textContent     = fmtMoney(donTotal);
+      document.getElementById('sb-badge-lbl').textContent = 'donated from this area';
+      lbl.textContent = SB_STATE.nearbyPcs.length > 1 ? 'Donations within '+RADIUS_KM+' km' : 'Donations from this community';
+      lbl.className   = 'sb-section-label lbl-don';
+      if (!donItems.length) {
+        el.innerHTML = '<div class="sb-empty">No donations in this time period.</div>';
+      } else {
+        el.innerHTML = donItems.map(function(it) {
+          var dt=fmtDate(it.dateMs);
+          return '<div class="ccard" role="listitem">'+
+            '<div class="ccard-summary">'+esc(fmtMoney(it.amount)+' of Zakat donated')+'</div>'+
+            (dt?'<div class="ccard-date">&#128197; '+dt+'</div>':'')+
+            '</div>';
+        }).join('');
+      }
+
+    } else { // dis
+      var disItems = SB_STATE.disItems;
+      var disTotal = SB_STATE.disTotal;
+      document.getElementById('sb-head').className    = 'sb-head mode-dis';
+      document.getElementById('sb-n').textContent     = fmtMoney(disTotal);
+      document.getElementById('sb-badge-lbl').textContent = 'distributed to this area';
+      lbl.textContent = SB_STATE.nearbyPcs.length > 1 ? 'Distributions within '+RADIUS_KM+' km' : 'Distributions to this community';
+      lbl.className   = 'sb-section-label lbl-dis';
+      if (!disItems.length) {
+        el.innerHTML = '<div class="sb-empty">No distributions in this time period.</div>';
+      } else {
+        el.innerHTML = disItems.map(function(it) {
+          var dt=fmtDate(it.dateMs);
+          return '<div class="ccard" role="listitem">'+
+            '<div class="ccard-summary">'+esc(fmtMoney(it.amount)+' of Zakat distributed towards '+fmtDisSubject(it.subject))+'</div>'+
+            (dt?'<div class="ccard-date">&#128197; '+dt+'</div>':'')+
+            '</div>';
+        }).join('');
+      }
     }
-    openSidebar();
   }
 
   function sbActivateTab(mode) {
@@ -1371,20 +1483,11 @@ input[type=range]::-moz-range-thumb {
       if (el) el.classList.toggle('sb-tab-active', m === mode);
     });
   }
+
+  // Tab tile clicked — just re-render, no recompute
   function sbTabClick(mode) {
-    var pc=SB_STATE.pc, loc=SB_STATE.loc;
-    if (!pc||!loc) return;
-    var weeks=SB_STATE.weeks;
-    var cutoffMs = weeks < MAX_WEEKS ? Date.now() - weeks*7*24*60*60*1000 : null;
-    if (mode==='app') {
-      var appData=ALL_DATA.filter(function(d){return d.pc===pc;})[0];
-      var cases=appData ? (cutoffMs ? appData.cases.filter(function(c){return c.dateMs&&c.dateMs>=cutoffMs;}) : appData.cases) : [];
-      openSidebarApp(cases, pc, loc.city, loc.state);
-    } else {
-      var src=mode==='don'?ALL_DONATIONS:ALL_DISTRIB, entry=src[pc];
-      var items=entry ? (cutoffMs ? (entry.items||[]).filter(function(it){return it.dateMs&&it.dateMs>=cutoffMs;}) : (entry.items||[])) : [];
-      openSidebarItems(mode, items, pc, loc);
-    }
+    if (!SB_STATE.pc) return;
+    sbShowTab(mode);
   }
   // Drag-to-close on mobile bottom sheet
   function initDragToClose() {
@@ -1499,40 +1602,10 @@ input[type=range]::-moz-range-thumb {
       res = []; idx = -1;
       map.flyTo([r.lat, r.lng], 11, { duration: 1.2 });
       setTimeout(function() {
-        var weeks    = parseInt(slider.value);
-        var cutoffMs = weeks < MAX_WEEKS ? Date.now() - weeks * 7 * 24 * 60 * 60 * 1000 : null;
-        // Collect nearby application cases (10 km radius)
-        var nearby = ALL_DATA.filter(function(d) {
-          return haversine(r.lat, r.lng, d.lat, d.lng) <= RADIUS_KM;
-        });
-        var allCases = [];
-        nearby.forEach(function(d) {
-          var fc = cutoffMs ? d.cases.filter(function(c) { return c.dateMs && c.dateMs >= cutoffMs; }) : d.cases;
-          allCases = allCases.concat(fc);
-        });
-        allCases.sort(function(a,b) { return (b.dateMs||0)-(a.dateMs||0); });
-        var multi    = nearby.length > 1;
-        var areaLbl  = multi ? 'Applications within '+RADIUS_KM+' km' : 'Applications from this community';
-        var cityLbl  = multi ? (r.city||r.pc)+' & surrounding suburbs' : (r.city||r.pc);
-        // Show app sidebar if cases exist, otherwise fall back to donations/distributions
-        if (allCases.length > 0) {
-          openSidebarApp(allCases, r.pc, cityLbl, r.state, areaLbl);
-        } else {
-          var loc = PC_LOOKUP[r.pc] || r;
-          var don = ALL_DONATIONS[r.pc];
-          var dis = ALL_DISTRIB[r.pc];
-          if (don) {
-            var donItems = cutoffMs
-              ? (don.items || []).filter(function(it) { return it.dateMs && it.dateMs >= cutoffMs; })
-              : (don.items || []);
-            openSidebarItems('don', donItems, r.pc, loc);
-          } else if (dis) {
-            var disItems = cutoffMs
-              ? (dis.items || []).filter(function(it) { return it.dateMs && it.dateMs >= cutoffMs; })
-              : (dis.items || []);
-            openSidebarItems('dis', disItems, r.pc, loc);
-          }
-        }
+        // Open sidebar with radius — computes nearbyPcs for all three layers
+        openSidebarForPc(r.pc, true, null);
+        // Show search radius ring on map
+        showSearchHighlight(SB_STATE.loc, SB_STATE.nearbyPcs);
       }, 700);
     }
 
