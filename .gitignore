@@ -1,0 +1,22 @@
+# ── Secrets — NEVER commit these ─────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Netlify local files ───────────────────────────────────────────────────────
+.netlify/
+
+# ── Node ─────────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+
+# ── OS / Editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# NOTE: netlify/functions/data/au-postcodes.json is intentionally committed to
+# the repository. It is generated once by running: node scripts/build-postcodes.js
+# Do NOT add it to .gitignore.
