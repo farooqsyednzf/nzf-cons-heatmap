@@ -12,7 +12,7 @@
  */
 
 const BLOB_API    = 'https://api.netlify.com/api/v1/blobs';
-const SITE_ID     = process.env.NETLIFY_SITE_ID || '669161e2-4220-4f4c-9dfa-973fe0ab7808';
+const SITE_ID     = process.env.NETLIFY_SITE_ID;
 const BLOB_TOKEN  = process.env.NETLIFY_BLOBS_TOKEN || process.env.NETLIFY_TOKEN;
 const STORE_PATH  = 'site:nzf-map';  // SDK adds "site:" prefix to store names
 const BLOB_OUTPUT = 'aggregated-v2';
@@ -41,7 +41,7 @@ exports.handler = async (event) => {
   }
 
   // ── 2. Netlify Blobs (raw HTTP — no SDK) ─────────────────────────────────────
-  if (BLOB_TOKEN) {
+  if (BLOB_TOKEN && SITE_ID) {
     try {
       const url  = `${BLOB_API}/${SITE_ID}/${STORE_PATH}/${BLOB_OUTPUT}`;
       const resp = await fetch(url, {
