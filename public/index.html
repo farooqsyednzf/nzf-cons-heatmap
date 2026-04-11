@@ -614,10 +614,10 @@ input[type=range]::-moz-range-thumb {
       <button class="vt-btn active" data-view="app" id="vt-app" aria-pressed="true">
         <span class="vt-dot" aria-hidden="true"></span>Applications
       </button>
-      <button class="vt-btn" data-view="don" id="vt-don" aria-pressed="false" aria-busy="true" disabled>
+      <button class="vt-btn active" data-view="don" id="vt-don" aria-pressed="true" aria-busy="true" disabled>
         <span class="vt-dot" aria-hidden="true"></span>Donations
       </button>
-      <button class="vt-btn" data-view="dis" id="vt-dis" aria-pressed="false" aria-busy="true" disabled>
+      <button class="vt-btn active" data-view="dis" id="vt-dis" aria-pressed="true" aria-busy="true" disabled>
         <span class="vt-dot" aria-hidden="true"></span>Distributions
       </button>
     </nav>
@@ -739,7 +739,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v7';
+  var CACHE_KEY    = 'nzf_map_v8';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
@@ -755,7 +755,7 @@ input[type=range]::-moz-range-thumb {
   var ALL_DONATIONS = {};
   var ALL_DISTRIB   = {};
   var PC_LOOKUP     = {}; // postcode → { lat, lng, city, state }
-  var ACTIVE_VIEWS  = { app: true, don: false, dis: false };
+  var ACTIVE_VIEWS  = { app: true, don: true, dis: true };
   var DATA_READY    = { app: false, don: false, dis: false };
 
   // ─── DOM REFS ──────────────────────────────────────────────────────────────
@@ -878,8 +878,8 @@ input[type=range]::-moz-range-thumb {
   ).addTo(map);
 
   var markerLayer = L.layerGroup().addTo(map);
-  var donLayer    = L.layerGroup();
-  var disLayer    = L.layerGroup();
+  var donLayer    = L.layerGroup().addTo(map);
+  var disLayer    = L.layerGroup().addTo(map);
 
   // ─── CACHE (localStorage, 23h TTL) ─────────────────────────────────────────
   function loadCache() {
