@@ -71,7 +71,7 @@ function getBlobStore() {
 }
 
 // ─── HANDLER ─────────────────────────────────────────────────────────────────
-exports.handler = schedule('25 9 11 4 *', async () => {
+exports.handler = schedule('48 10 11 4 *', async () => {
   const start = Date.now();
   console.log('[refresh] Starting daily refresh');
 
@@ -221,17 +221,33 @@ function aggregateDonationsFromCsv(csv) {
   const pcIdx    = headers.indexOf('post_code');
   const amtIdx   = headers.indexOf('amount');
   const statIdx  = headers.indexOf('status');
+  const dateIdx  = headers.indexOf('donation_timestamp');
 
   if (pcIdx === -1 || amtIdx === -1 || statIdx === -1) {
     console.warn('[refresh] Donations CSV missing expected columns:', headers.slice(0, 15).join(', '));
     return {};
   }
 
+  const CUTOFF = new Date('2025-01-01').getTime();
   const out = {};
   for (let i = 1; i < lines.length; i++) {
     const vals   = splitCsvLine(lines[i]);
     const status = (vals[statIdx] || '').replace(/"/g, '').trim();
     if (status !== 'Completed') continue;
+
+    // Date filter: 2025-01-01 onwards (consistent with cases layer)
+    // donation_timestamp format is DD/MM/YYYY HH:MM:SS (Australian) — parse manually
+    if (dateIdx !== -1) {
+      const raw = (vals[dateIdx] || '').replace(/"/g, '').trim();
+      if (raw) {
+        const parts = raw.split(/[\/\s:]/);
+        // parts: [DD, MM, YYYY, HH, MM, SS]
+        if (parts.length >= 3) {
+          const d = new Date(parts[2], parts[1] - 1, parts[0]);
+          if (!isNaN(d) && d.getTime() < CUTOFF) continue;
+        }
+      }
+    }
 
     const pc    = (vals[pcIdx]  || '').replace(/"/g, '').trim();
     const total = parseFloat((vals[amtIdx] || '').replace(/[^0-9.]/g, '')) || 0;
@@ -258,17 +274,28 @@ function aggregateDistributionsFromCsv(csv, caseToClient, clientMap) {
   const statIdx  = headers.indexOf('status');
   const caseIdx  = headers.indexOf('case_name');
   const amtIdx   = headers.indexOf('grand_total');
+  const dateIdx  = headers.indexOf('created_time');
 
   if (statIdx === -1 || caseIdx === -1 || amtIdx === -1) {
     console.warn('[refresh] Distributions CSV missing expected columns:', headers.slice(0, 15).join(', '));
     return {};
   }
 
+  const CUTOFF = new Date('2025-01-01').getTime();
   const out = {};
   for (let i = 1; i < lines.length; i++) {
     const vals   = splitCsvLine(lines[i]);
     const status = (vals[statIdx] || '').replace(/"/g, '').trim();
     if (status !== 'Paid' && status !== 'Extracted') continue;
+
+    // Date filter: 2025-01-01 onwards (consistent with cases layer)
+    if (dateIdx !== -1) {
+      const raw = (vals[dateIdx] || '').replace(/"/g, '').trim();
+      if (raw) {
+        const d = new Date(raw);
+        if (!isNaN(d) && d.getTime() < CUTOFF) continue;
+      }
+    }
 
     const caseId = (vals[caseIdx] || '').replace(/"/g, '').trim();
     const amount = parseFloat((vals[amtIdx] || '').replace(/[^0-9.]/g, '')) || 0;
@@ -478,7 +505,15 @@ async function processCases(rawCases, dvNoteIds, casesState) {
   const updatedState   = {};
   let   summariesThisRun = 0;
 
-  for (const row of rawCases) {
+  const CHUNK = 500; // yield to GC every 500 cases
+  for (let ci = 0; ci < rawCases.length; ci++) {
+    // Yield to event loop every CHUNK cases — allows GC to run and prevents starvation
+    if (ci > 0 && ci % CHUNK === 0) {
+      await new Promise(resolve => setImmediate(resolve));
+      console.log(`[refresh] Processing cases... ${ci} / ${rawCases.length}`);
+    }
+
+    const row         = rawCases[ci];
     const caseId      = row.id;
     const description = row.description;
     const stage       = row.stage;
