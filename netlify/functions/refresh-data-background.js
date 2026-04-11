@@ -229,18 +229,13 @@ function aggregateDonationsFromCsv(csv) {
   }
 
   const CUTOFF = new Date('2025-01-01').getTime();
-  const now    = Date.now();
-  const C4w    = now -  4 * 7 * 24 * 3600 * 1000;
-  const C13w   = now - 13 * 7 * 24 * 3600 * 1000;
-  const C26w   = now - 26 * 7 * 24 * 3600 * 1000;
   const out = {};
   for (let i = 1; i < lines.length; i++) {
     const vals   = splitCsvLine(lines[i]);
     const status = (vals[statIdx] || '').replace(/"/g, '').trim();
     if (status !== 'Completed') continue;
 
-    // Date filter + dateMs extraction
-    // donation_timestamp format is DD/MM/YYYY HH:MM:SS (Australian)
+    // Date filter + dateMs extraction (format: DD/MM/YYYY HH:MM:SS)
     let donDateMs = null;
     if (dateIdx !== -1) {
       const raw = (vals[dateIdx] || '').replace(/"/g, '').trim();
@@ -264,27 +259,18 @@ function aggregateDonationsFromCsv(csv) {
       const geo = lookupPostcode(pc);
       out[pc] = {
         count: 0, total: 0, items: [],
-        count_4w: 0, total_4w: 0, count_13w: 0, total_13w: 0,
-        count_26w: 0, total_26w: 0,
         suburb: geo ? geo.suburb : null, state: geo ? geo.state : null,
         lat: geo ? geo.lat : null, lng: geo ? geo.lng : null,
       };
     }
     out[pc].count++;
-    out[pc].total += total;
+    out[pc].total = Math.round((out[pc].total + total) * 100) / 100;
+    // Store ALL items with dateMs for exact client-side time filtering
     out[pc].items.push({ amount: Math.round(total * 100) / 100, dateMs: donDateMs });
-    if (donDateMs) {
-      if (donDateMs >= C4w)  { out[pc].count_4w++;  out[pc].total_4w  += total; }
-      if (donDateMs >= C13w) { out[pc].count_13w++; out[pc].total_13w += total; }
-      if (donDateMs >= C26w) { out[pc].count_26w++; out[pc].total_26w += total; }
-    }
   }
+  // Sort items newest-first (no truncation — all items needed for exact filtering)
   Object.values(out).forEach(entry => {
     entry.items.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0));
-    entry.items = entry.items.slice(0, 5);
-    entry.total_4w  = Math.round(entry.total_4w  * 100) / 100;
-    entry.total_13w = Math.round(entry.total_13w * 100) / 100;
-    entry.total_26w = Math.round(entry.total_26w * 100) / 100;
   });
   return out;
 }
@@ -308,11 +294,7 @@ function aggregateDistributionsFromCsv(csv, caseToClient, clientMap) {
     return {};
   }
 
-  const CUTOFF  = new Date('2025-01-01').getTime();
-  const now     = Date.now();
-  const C4w     = now -  4 * 7 * 24 * 3600 * 1000;
-  const C13w    = now - 13 * 7 * 24 * 3600 * 1000;
-  const C26w    = now - 26 * 7 * 24 * 3600 * 1000;
+  const CUTOFF = new Date('2025-01-01').getTime();
   const out = {};
   for (let i = 1; i < lines.length; i++) {
     const vals   = splitCsvLine(lines[i]);
@@ -332,8 +314,8 @@ function aggregateDistributionsFromCsv(csv, caseToClient, clientMap) {
       }
     }
 
-    const caseId = (vals[caseIdx] || '').replace(/"/g, '').trim();
-    const amount = parseFloat((vals[amtIdx] || '').replace(/[^0-9.]/g, '')) || 0;
+    const caseId  = (vals[caseIdx] || '').replace(/"/g, '').trim();
+    const amount  = parseFloat((vals[amtIdx] || '').replace(/[^0-9.]/g, '')) || 0;
     if (!caseId || amount <= 0) continue;
 
     const clientId = caseToClient[caseId];
@@ -345,216 +327,29 @@ function aggregateDistributionsFromCsv(csv, caseToClient, clientMap) {
     const pc = client.postcode;
     if (!/^\d{4}$/.test(pc)) continue;
 
+    const subject = subjIdx !== -1 ? (vals[subjIdx] || '').replace(/"/g, '').trim() : '';
+
     if (!out[pc]) {
       const geo = lookupPostcode(pc);
       out[pc] = {
         count: 0, total: 0, items: [],
-        count_4w: 0, total_4w: 0, count_13w: 0, total_13w: 0,
-        count_26w: 0, total_26w: 0,
         suburb: client.suburb || (geo ? geo.suburb : null),
         state:  client.state  || (geo ? geo.state  : null),
         lat: geo ? geo.lat : null, lng: geo ? geo.lng : null,
       };
     }
     out[pc].count++;
-    out[pc].total += amount;
-    const subject = subjIdx !== -1 ? (vals[subjIdx] || '').replace(/"/g, '').trim() : '';
+    out[pc].total = Math.round((out[pc].total + amount) * 100) / 100;
+    // Store ALL items with dateMs + subject for exact client-side filtering
     out[pc].items.push({ amount: Math.round(amount * 100) / 100, subject, dateMs: disDateMs });
-    // Accumulate time-window buckets
-    if (disDateMs) {
-      if (disDateMs >= C4w)  { out[pc].count_4w++;  out[pc].total_4w  += amount; }
-      if (disDateMs >= C13w) { out[pc].count_13w++; out[pc].total_13w += amount; }
-      if (disDateMs >= C26w) { out[pc].count_26w++; out[pc].total_26w += amount; }
-    }
   }
-  // Sort items newest-first, keep top 5 for display
+  // Sort items newest-first
   Object.values(out).forEach(entry => {
     entry.items.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0));
-    entry.items = entry.items.slice(0, 5);
-    entry.total_4w  = Math.round(entry.total_4w  * 100) / 100;
-    entry.total_13w = Math.round(entry.total_13w * 100) / 100;
-    entry.total_26w = Math.round(entry.total_26w * 100) / 100;
   });
   return out;
 }
 
-
-// ─── SHARED LOOKUP BUILDERS ───────────────────────────────────────────────────
-function buildClientMap(clientRows) {
-  const map = {};
-  clientRows.forEach(c => {
-    const id = (c.id || '').trim();
-    if (!id) return;
-    map[id] = {
-      postcode: (c.mailing_zip       || '').trim(),
-      suburb:   (c.mailing_city      || '').trim(),
-      state:    (c.mailing_state     || '').trim(),
-      dv_flag:  (c.domestic_violence || '').trim().toLowerCase(),
-    };
-  });
-  return map;
-}
-
-function buildCaseToClientMap(caseRows) {
-  const map = {};
-  caseRows.forEach(row => {
-    const cid = (row.id          || '').trim();
-    const clt = (row.client_name || '').trim();
-    if (cid && clt) map[cid] = clt;
-  });
-  return map;
-}
-
-// ─── CASES ────────────────────────────────────────────────────────────────────
-function buildRawCases(caseRows, clientMap) {
-  const CUTOFF = new Date('2025-01-01').getTime();
-  const merged = [];
-
-  caseRows.forEach(row => {
-    // Filter to Zakat Receiver type only
-    const type = (row.internal_case_type || row.type || '').trim();
-    if (type && type !== 'Zakat Receiver') return;
-
-    // Date filter: 2025-01-01 onwards
-    const rawDate = (row.created_time || '').trim();
-    if (rawDate) {
-      const d = new Date(rawDate);
-      if (!isNaN(d) && d.getTime() < CUTOFF) return;
-    }
-
-    const client = clientMap[(row.client_name || '').trim()] || {};
-    merged.push({
-      id:          (row.id          || '').trim(),
-      stage:       (row.stage       || '').trim(),
-      description: (row.description || '').trim(),
-      created_date: rawDate,
-      postcode:    client.postcode || '',
-      suburb:      client.suburb   || '',
-      state:       client.state    || '',
-      dv_flag:     client.dv_flag  || '',
-    });
-  });
-
-  return merged;
-}
-
-// ─── DONATIONS ────────────────────────────────────────────────────────────────
-function buildDonations(rows) {
-  const out = {};
-  rows.forEach(r => {
-    if ((r.status || '').trim() !== 'Completed') return;
-
-    const pc    = (r.post_code || '').trim();
-    const total = parseFloat((r.amount || '').replace(/[^0-9.]/g, '')) || 0;
-    if (!pc || !/^\d{4}$/.test(pc) || total <= 0) return;
-
-    if (!out[pc]) {
-      const geo  = lookupPostcode(pc);
-      out[pc] = {
-        count:  0,
-        total:  0,
-        suburb: geo ? geo.suburb : null,
-        state:  geo ? geo.state  : null,
-        lat:    geo ? geo.lat    : null,
-        lng:    geo ? geo.lng    : null,
-      };
-    }
-    out[pc].count++;
-    out[pc].total += total;
-  });
-  return out;
-}
-
-// ─── DISTRIBUTIONS ────────────────────────────────────────────────────────────
-// Chain: Distribution.case_name → Cases.client_name → Clients.mailing_zip
-function buildDistributions(distRows, caseToClient, clientMap) {
-  const out = {};
-  distRows.forEach(r => {
-    const status = (r.status || '').trim();
-    if (status !== 'Paid' && status !== 'Extracted') return;
-
-    const caseId = (r.case_name   || '').trim();
-    const amount = parseFloat((r.grand_total || '').replace(/[^0-9.]/g, '')) || 0;
-    if (!caseId || amount <= 0) return;
-
-    const clientId = caseToClient[caseId];
-    if (!clientId) return;
-
-    const client = clientMap[clientId];
-    if (!client || !client.postcode) return;
-
-    const pc = client.postcode;
-    if (!/^\d{4}$/.test(pc)) return;
-
-    if (!out[pc]) {
-      const geo  = lookupPostcode(pc);
-      out[pc] = {
-        count:  0,
-        total:  0,
-        suburb: client.suburb || (geo ? geo.suburb : null),
-        state:  client.state  || (geo ? geo.state  : null),
-        lat:    geo ? geo.lat : null,
-        lng:    geo ? geo.lng : null,
-      };
-    }
-    out[pc].count++;
-    out[pc].total += amount;
-  });
-  return out;
-}
-
-// ─── DV NOTES SCAN (Zoho CRM COQL) ───────────────────────────────────────────
-// Fetches Deals note IDs that contain DV keywords server-side.
-// Returns a Set of case (Deals) IDs whose notes flagged DV content.
-const DV_NOTE_PHRASES = [
-  'domestic violence', 'family violence', 'physical abuse', 'sexual abuse',
-  'abusive partner', 'abusive husband', 'violent partner', 'violent husband',
-  'restraining order', 'intervention order', 'apprehended violence',
-  'safe house', 'fleeing violence', 'fled violence',
-];
-
-async function fetchDvCaseIdsFromCrm() {
-  const dvIds = new Set();
-
-  const criteria  = DV_NOTE_PHRASES.map(kw => `Note_Content like '%${kw}%'`).join(' OR ');
-  const baseQuery = `SELECT Parent_Id FROM Notes WHERE (${criteria})`;
-
-  let offset = 0;
-  let more   = true;
-
-  while (more) {
-    try {
-      const resp = await fetch(`${ZOHO_CRM_BASE}/coql`, {
-        method:  'POST',
-        headers: {
-          'Authorization': `Zoho-oauthtoken ${_zohoToken}`,
-          'Content-Type':  'application/json',
-        },
-        body: JSON.stringify({ select_query: `${baseQuery} LIMIT 200 OFFSET ${offset}` }),
-      });
-
-      if (resp.status === 204 || resp.status === 404) break;
-      if (!resp.ok) {
-        console.warn(`[refresh] Notes COQL HTTP ${resp.status} — DV notes scan incomplete`);
-        break;
-      }
-
-      const data = await resp.json();
-      (data.data || []).forEach(row => {
-        const pid = (row.Parent_Id && row.Parent_Id.id) ? row.Parent_Id.id : row.Parent_Id;
-        if (pid) dvIds.add(String(pid));
-      });
-
-      more    = !!(data.info && data.info.more_records);
-      offset += 200;
-    } catch (e) {
-      console.warn('[refresh] Notes COQL page failed:', e.message);
-      break;
-    }
-  }
-
-  return dvIds;
-}
 
 // ─── CASES PROCESSING ─────────────────────────────────────────────────────────
 async function processCases(rawCases, dvNoteIds, casesState) {
