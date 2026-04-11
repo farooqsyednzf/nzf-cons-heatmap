@@ -207,11 +207,11 @@ async function fetchDvCaseIdsFromCrm() {
 
       for (const row of rows) {
         // Parent_Id is an object: { name, id, module: { api_name } }
-        const parentId = row.Parent_Id?.id || row.Parent_Id;
+        const parentId = (row.Parent_Id && row.Parent_Id.id) ? row.Parent_Id.id : row.Parent_Id;
         if (parentId) dvIds.add(String(parentId));
       }
 
-      more   = data.info?.more_records === true;
+      more   = (data.info && data.info.more_records === true);
       offset += 200;
       pages++;
     } catch (e) {
@@ -266,7 +266,7 @@ async function fetchDonationsFromAnalytics() {
     const total = parseFloat(r.total) || 0;
     if (!pc || !/^\d{4}$/.test(pc) || total <= 0) continue;
     const geo = lookupPostcode(pc);
-    out[pc] = { count: parseInt(r.cnt) || 0, total, suburb: geo?.suburb || null, state: geo?.state || null };
+    out[pc] = { count: parseInt(r.cnt) || 0, total, suburb: (geo && geo.suburb) ? geo.suburb : null, state: (geo && geo.state) ? geo.state : null };
   }
   return out;
 }
@@ -292,7 +292,7 @@ async function fetchDistributionsFromAnalytics() {
     const total = parseFloat(r.total) || 0;
     if (!pc || !/^\d{4}$/.test(pc) || total <= 0) continue;
     const geo = lookupPostcode(pc);
-    out[pc] = { count: parseInt(r.cnt) || 0, total, suburb: geo?.suburb || null, state: geo?.state || null };
+    out[pc] = { count: parseInt(r.cnt) || 0, total, suburb: (geo && geo.suburb) ? geo.suburb : null, state: (geo && geo.state) ? geo.state : null };
   }
   return out;
 }
@@ -399,7 +399,7 @@ async function zohoAnalyticsSql(sql) {
   if (!r.ok) throw new Error(`Analytics create job: HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
 
   const d = await r.json();
-  if (!d.data?.jobId) throw new Error('Analytics: no jobId returned');
+  if (!d.data || !d.data.jobId) throw new Error('Analytics: no jobId returned');
 
   return pollAnalyticsJob(d.data.jobId, hdrs);
 }
@@ -410,7 +410,7 @@ async function pollAnalyticsJob(jobId, hdrs, attempts = 0) {
   const url  = `${ZOHO_ANALYTICS_BASE}/bulk/workspaces/${ZOHO_WS_ID}/exportjobs/${jobId}`;
   const resp = await fetch(url, { headers: hdrs });
   const d    = await resp.json();
-  const code = String(d.data?.jobCode || '');
+  const code = String((d.data && d.data.jobCode) ? d.data.jobCode : '');
 
   if (code === '1004') {
     const dl = await fetch(d.data.downloadUrl, { headers: hdrs });
