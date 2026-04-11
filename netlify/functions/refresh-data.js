@@ -25,19 +25,21 @@ const {
 const { resolveLocation, lookupPostcode } = require('./lib/postcodes');
 
 // ─── ENVIRONMENT ──────────────────────────────────────────────────────────────
-const ZOHO_TOKEN    = process.env.ZOHO_TOKEN;
-const ZOHO_ORG_ID   = process.env.ZOHO_ORG_ID   || '668395719';
-const ZOHO_WS_ID    = process.env.ZOHO_WS_ID    || '1715382000001002475';
-const ZOHO_API_BASE = 'https://analyticsapi.zoho.com/restapi/v2';
+// A single Zoho OAuth client covers both Analytics and CRM.
+// The refresh token does not expire. At the start of each daily run we exchange
+// it for a fresh 1-hour access token used for all Zoho API calls.
+const ZOHO_CLIENT_ID      = process.env.ZOHO_CLIENT_ID;
+const ZOHO_CLIENT_SECRET  = process.env.ZOHO_CLIENT_SECRET;
+const ZOHO_REFRESH_TOKEN  = process.env.ZOHO_REFRESH_TOKEN;
+const ZOHO_TOKEN_URL      = 'https://accounts.zoho.com/oauth/v2/token';
 
-// Zoho CRM uses OAuth with short-lived access tokens (1 hour).
-// We store a long-lived refresh token and exchange it for a fresh access token
-// at the start of each daily run. The refresh token does not expire.
-const ZOHO_CRM_CLIENT_ID     = process.env.ZOHO_CRM_CLIENT_ID;
-const ZOHO_CRM_CLIENT_SECRET = process.env.ZOHO_CRM_CLIENT_SECRET;
-const ZOHO_CRM_REFRESH_TOKEN = process.env.ZOHO_CRM_REFRESH_TOKEN;
-const ZOHO_CRM_BASE          = 'https://www.zohoapis.com/crm/v2';
-const ZOHO_CRM_TOKEN_URL     = 'https://accounts.zoho.com/oauth/v2/token';
+const ZOHO_ORG_ID         = process.env.ZOHO_ORG_ID || '668395719';
+const ZOHO_WS_ID          = process.env.ZOHO_WS_ID  || '1715382000001002475';
+const ZOHO_ANALYTICS_BASE = 'https://analyticsapi.zoho.com/restapi/v2';
+const ZOHO_CRM_BASE       = 'https://www.zohoapis.com/crm/v2';
+
+// Holds the access token for the current run - refreshed once at startup
+let _zohoAccessToken = null;
 
 const BLOB_STORE  = 'nzf-map';
 const BLOB_OUTPUT = 'aggregated-v2';
@@ -51,14 +53,13 @@ exports.handler = schedule('0 18 * * *', async () => {
   console.log('[refresh] ── Starting daily refresh ──────────────────────────');
 
   try {
-    // ── Step 1: Get a fresh Zoho CRM access token ────────────────────────────
-    let crmToken = null;
+    // ── Step 1: Get a fresh Zoho access token (covers both Analytics and CRM) 
     try {
-      crmToken = await refreshZohoCrmToken();
-      console.log('[refresh] CRM access token obtained');
+      _zohoAccessToken = await refreshZohoToken();
+      console.log('[refresh] Zoho access token obtained (Analytics + CRM)');
     } catch (e) {
-      console.error('[refresh] ⚠️  CRM token refresh failed:', e.message);
-      console.error('[refresh] ⚠️  Notes DV scan will be skipped this run');
+      console.error('[refresh] ⚠️  Zoho token refresh failed:', e.message);
+      throw e; // Fatal — cannot fetch any data without a token
     }
 
     // ── Step 2: Fetch cases from Analytics (bulk SQL JOIN) ──────────────────
@@ -68,7 +69,7 @@ exports.handler = schedule('0 18 * * *', async () => {
 
     // ── Step 3: Fetch DV-flagged case IDs from CRM Notes ────────────────────
     console.log('[refresh] Scanning CRM notes for DV keywords...');
-    const dvNoteIds = await fetchDvCaseIdsFromCrm(crmToken);
+    const dvNoteIds = await fetchDvCaseIdsFromCrm();
     console.log(`[refresh] ${dvNoteIds.size} cases flagged via notes DV scan`);
 
     // ── Step 4: Load cached summaries/tags from Blobs ───────────────────────
@@ -114,22 +115,22 @@ exports.handler = schedule('0 18 * * *', async () => {
   }
 });
 
-// ─── ZOHO CRM: TOKEN REFRESH ──────────────────────────────────────────────────
+// ─── ZOHO: TOKEN REFRESH ───────────────────────────────────────────────────────
 // Exchanges the long-lived refresh token for a fresh 1-hour access token.
-// Called at the start of every daily run.
-async function refreshZohoCrmToken() {
-  if (!ZOHO_CRM_CLIENT_ID || !ZOHO_CRM_CLIENT_SECRET || !ZOHO_CRM_REFRESH_TOKEN) {
-    throw new Error('ZOHO_CRM_CLIENT_ID, ZOHO_CRM_CLIENT_SECRET and ZOHO_CRM_REFRESH_TOKEN must all be set');
+// One token covers both Analytics and CRM. Called once at the start of each run.
+async function refreshZohoToken() {
+  if (!ZOHO_CLIENT_ID || !ZOHO_CLIENT_SECRET || !ZOHO_REFRESH_TOKEN) {
+    throw new Error('ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET and ZOHO_REFRESH_TOKEN must all be set');
   }
 
   const body = new URLSearchParams({
     grant_type:    'refresh_token',
-    client_id:     ZOHO_CRM_CLIENT_ID,
-    client_secret: ZOHO_CRM_CLIENT_SECRET,
-    refresh_token: ZOHO_CRM_REFRESH_TOKEN,
+    client_id:     ZOHO_CLIENT_ID,
+    client_secret: ZOHO_CLIENT_SECRET,
+    refresh_token: ZOHO_REFRESH_TOKEN,
   });
 
-  const resp = await fetch(ZOHO_CRM_TOKEN_URL, {
+  const resp = await fetch(ZOHO_TOKEN_URL, {
     method:  'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body:    body.toString(),
@@ -157,12 +158,12 @@ const DV_NOTE_PHRASES = [
   'apprehended violence', 'restraining order', 'intervention order', 'protection order',
 ];
 
-async function fetchDvCaseIdsFromCrm(crmToken) {
+async function fetchDvCaseIdsFromCrm() {
   const dvIds = new Set();
 
-  if (!crmToken) {
-    console.error('[refresh] ⚠️  No CRM token — Notes DV scan SKIPPED');
-    console.error('[refresh] ⚠️  Set ZOHO_CRM_CLIENT_ID, ZOHO_CRM_CLIENT_SECRET and ZOHO_CRM_REFRESH_TOKEN');
+  if (!_zohoAccessToken) {
+    console.error('[refresh] ⚠️  No Zoho access token — Notes DV scan SKIPPED');
+    console.error('[refresh] ⚠️  Set ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET and ZOHO_REFRESH_TOKEN');
     console.error('[refresh] ⚠️  DV detection running on Description text + Domestic_Violence field only');
     return dvIds;
   }
@@ -188,7 +189,7 @@ async function fetchDvCaseIdsFromCrm(crmToken) {
       const resp = await fetch(`${ZOHO_CRM_BASE}/coql`, {
         method:  'POST',
         headers: {
-          'Authorization': `Zoho-oauthtoken ${crmToken}`,
+          'Authorization': `Zoho-oauthtoken ${_zohoAccessToken}`,
           'Content-Type':  'application/json',
         },
         body: JSON.stringify({ select_query: query }),
@@ -387,11 +388,11 @@ async function processCases(rawCases, dvNoteIds, casesState) {
 
 // ─── ZOHO ANALYTICS: SQL EXPORT (async job pattern) ──────────────────────────
 async function zohoAnalyticsSql(sql) {
-  if (!ZOHO_TOKEN) throw new Error('ZOHO_TOKEN environment variable not set');
+  if (!_zohoAccessToken) throw new Error('Zoho access token not initialised — token refresh must run first');
 
   const cfg  = encodeURIComponent(JSON.stringify({ sqlQuery: sql, responseFormat: 'csv' }));
-  const url  = `${ZOHO_API_BASE}/bulk/workspaces/${ZOHO_WS_ID}/exportjobs?CONFIG=${cfg}`;
-  const hdrs = { 'Authorization': `Zoho-oauthtoken ${ZOHO_TOKEN}`, 'ZANALYTICS-ORGID': ZOHO_ORG_ID };
+  const url  = `${ZOHO_ANALYTICS_BASE}/bulk/workspaces/${ZOHO_WS_ID}/exportjobs?CONFIG=${cfg}`;
+  const hdrs = { 'Authorization': `Zoho-oauthtoken ${_zohoAccessToken}`, 'ZANALYTICS-ORGID': ZOHO_ORG_ID };
 
   const r = await fetch(url, { method: 'POST', headers: hdrs });
   if (!r.ok) throw new Error(`Analytics create job: HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
@@ -405,7 +406,7 @@ async function zohoAnalyticsSql(sql) {
 async function pollAnalyticsJob(jobId, hdrs, attempts = 0) {
   if (attempts > 60) throw new Error('Analytics export job timed out');
 
-  const url  = `${ZOHO_API_BASE}/bulk/workspaces/${ZOHO_WS_ID}/exportjobs/${jobId}`;
+  const url  = `${ZOHO_ANALYTICS_BASE}/bulk/workspaces/${ZOHO_WS_ID}/exportjobs/${jobId}`;
   const resp = await fetch(url, { headers: hdrs });
   const d    = await resp.json();
   const code = String(d.data?.jobCode || '');
