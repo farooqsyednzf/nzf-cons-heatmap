@@ -739,7 +739,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v11';
+  var CACHE_KEY    = 'nzf_map_v12';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
@@ -754,6 +754,7 @@ input[type=range]::-moz-range-thumb {
   var ALL_DATA      = []; // postcodes with cases
   var ALL_DONATIONS = {};
   var ALL_DISTRIB   = {};
+  var SB_STATE = { pc: null, loc: null, weeks: 52 }; // sidebar state for tab switching
   var PC_LOOKUP     = {}; // postcode → { lat, lng, city, state }
   var ACTIVE_VIEWS  = { app: true, don: true, dis: true };
   var DATA_READY    = { app: false, don: false, dis: false };
@@ -1000,6 +1001,13 @@ input[type=range]::-moz-range-thumb {
 
     // Search
     initSearch();
+    ['app','don','dis'].forEach(function(m) {
+      var el=document.getElementById('sb-tab-'+m);
+      if (el) {
+        el.addEventListener('click', function(){sbTabClick(m);});
+        el.addEventListener('keydown', function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();sbTabClick(m);}});
+      }
+    });
 
     // Toggle buttons
     document.querySelectorAll('.vt-btn').forEach(function (btn) {
@@ -1273,6 +1281,8 @@ input[type=range]::-moz-range-thumb {
   }
 
   function openSidebarApp(cases, pc, city, state, areaLabel) {
+    SB_STATE.pc = pc; SB_STATE.loc = PC_LOOKUP[pc] || { city: city, state: state }; SB_STATE.weeks = parseInt(slider.value);
+    sbActivateTab('app');
     document.getElementById('sb-head').className = 'sb-head';
     document.getElementById('sb-pc').textContent  = pc;
     document.getElementById('sb-sub').textContent = city + (state ? ', ' + state : '');
@@ -1307,6 +1317,8 @@ input[type=range]::-moz-range-thumb {
   // ─── UNIFIED SIDEBAR FOR DONATIONS + DISTRIBUTIONS ──────────────────────────
   // Same card format as openSidebarApp. mode = 'don' or 'dis'.
   function openSidebarItems(mode, items, pc, loc) {
+    SB_STATE.pc = pc; SB_STATE.loc = loc; SB_STATE.weeks = parseInt(slider.value);
+    sbActivateTab(mode);
     var isDon  = mode === 'don';
     var col    = isDon ? COL.DON : COL.DIS;
     var label  = isDon ? 'donated from this area' : 'distributed to this area';
@@ -1343,6 +1355,27 @@ input[type=range]::-moz-range-thumb {
     openSidebar();
   }
 
+  function sbActivateTab(mode) {
+    ['app','don','dis'].forEach(function(m) {
+      var el = document.getElementById('sb-tab-'+m);
+      if (el) el.classList.toggle('sb-tab-active', m === mode);
+    });
+  }
+  function sbTabClick(mode) {
+    var pc=SB_STATE.pc, loc=SB_STATE.loc;
+    if (!pc||!loc) return;
+    var weeks=SB_STATE.weeks;
+    var cutoffMs = weeks < MAX_WEEKS ? Date.now() - weeks*7*24*60*60*1000 : null;
+    if (mode==='app') {
+      var appData=ALL_DATA.filter(function(d){return d.pc===pc;})[0];
+      var cases=appData ? (cutoffMs ? appData.cases.filter(function(c){return c.dateMs&&c.dateMs>=cutoffMs;}) : appData.cases) : [];
+      openSidebarApp(cases, pc, loc.city, loc.state);
+    } else {
+      var src=mode==='don'?ALL_DONATIONS:ALL_DISTRIB, entry=src[pc];
+      var items=entry ? (cutoffMs ? (entry.items||[]).filter(function(it){return it.dateMs&&it.dateMs>=cutoffMs;}) : (entry.items||[])) : [];
+      openSidebarItems(mode, items, pc, loc);
+    }
+  }
   // Drag-to-close on mobile bottom sheet
   function initDragToClose() {
     var handle = document.querySelector('.sb-handle');
