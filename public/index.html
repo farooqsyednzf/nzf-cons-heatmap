@@ -923,7 +923,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v16';
+  var CACHE_KEY    = 'nzf_map_v17';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
@@ -1041,6 +1041,8 @@ input[type=range]::-moz-range-thumb {
   function goApp(n)   { return n >= 10 ? 0.88 : n >= 5 ? 0.80 : 0.70; }
   function grMoney(t) { return Math.max(6, Math.min(42, Math.sqrt(t / 500) * 3.5)); }
   function goMoney(t) { return t > 100000 ? 0.85 : t > 50000 ? 0.75 : 0.65; }
+  function grCount(n) { return Math.max(7, Math.sqrt(n) * 5.5); }
+  function goCount(n) { return n >= 10 ? 0.88 : n >= 5 ? 0.80 : 0.70; }
 
   // ─── MAP INIT ──────────────────────────────────────────────────────────────
   setProgress(10);
@@ -1296,20 +1298,21 @@ input[type=range]::-moz-range-thumb {
       if (!loc || !loc.lat || !loc.lng) return;
 
       // Use precomputed bucket for marker size — not items (avoids cache sparsity bug)
+      var bucketCount = isAll ? (d.count || 0) : ((d.wc || [])[weeks - 1] || 0);
       var bucketTotal = isAll ? (d.total || 0) : ((d.wt || [])[weeks - 1] || 0);
-      if (!bucketTotal) return;
+      if (!bucketCount) return;
 
       var cm = L.circleMarker([loc.lat, loc.lng], {
-        radius:      grMoney(bucketTotal),
+        radius:      grCount(bucketCount),
         fillColor:   COL.DON,
         color:       'rgba(8,80,65,.4)',
         weight:      1.5, opacity: 1,
-        fillOpacity: goMoney(bucketTotal),
+        fillOpacity: goCount(bucketCount),
       });
       var wLabel = isAll ? 'since 2025' : 'last ' + weeks + ' wks';
       cm.bindTooltip(
         '<strong>' + pc + '</strong>, ' + loc.city + ', ' + loc.state +
-        '<br><span style="color:' + COL.DON + ';font-weight:700;">' + fmtMoney(bucketTotal) + ' donated</span>' +
+        '<br><span style="color:' + COL.DON + ';font-weight:700;">' + bucketCount.toLocaleString() + ' donation' + (bucketCount !== 1 ? 's' : '') + ' · ' + fmtMoney(bucketTotal) + '</span>' +
         '<br><span style="color:#888;font-size:11px;">' + wLabel + '</span>',
         { direction: 'top', offset: [0, -8] }
       );
@@ -1331,20 +1334,21 @@ input[type=range]::-moz-range-thumb {
       var loc = PC_LOOKUP[pc];
       if (!loc || !loc.lat || !loc.lng) return;
 
+      var bucketCount = isAll ? (d.count || 0) : ((d.wc || [])[weeks - 1] || 0);
       var bucketTotal = isAll ? (d.total || 0) : ((d.wt || [])[weeks - 1] || 0);
-      if (!bucketTotal) return;
+      if (!bucketCount) return;
 
       var cm = L.circleMarker([loc.lat, loc.lng], {
-        radius:      grMoney(bucketTotal),
+        radius:      grCount(bucketCount),
         fillColor:   COL.DIS,
         color:       'rgba(4,44,83,.4)',
         weight:      1.5, opacity: 1,
-        fillOpacity: goMoney(bucketTotal),
+        fillOpacity: goCount(bucketCount),
       });
       var wLabel = isAll ? 'since 2025' : 'last ' + weeks + ' wks';
       cm.bindTooltip(
         '<strong>' + pc + '</strong>, ' + loc.city + ', ' + loc.state +
-        '<br><span style="color:' + COL.DIS + ';font-weight:700;">' + fmtMoney(bucketTotal) + ' distributed</span>' +
+        '<br><span style="color:' + COL.DIS + ';font-weight:700;">' + bucketCount.toLocaleString() + ' distribution' + (bucketCount !== 1 ? 's' : '') + ' · ' + fmtMoney(bucketTotal) + '</span>' +
         '<br><span style="color:#888;font-size:11px;">' + wLabel + '</span>',
         { direction: 'top', offset: [0, -8] }
       );
