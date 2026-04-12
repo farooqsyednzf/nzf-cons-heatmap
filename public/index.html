@@ -923,7 +923,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v20';
+  var CACHE_KEY    = 'nzf_map_v21';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
@@ -1036,13 +1036,13 @@ input[type=range]::-moz-range-thumb {
   }
 
   // Marker sizing
-  function grApp(n)   { return Math.max(4, Math.log(n + 1) * 4.5); }
+  function grApp(n)   { return Math.min(28, Math.max(5, Math.log(n + 1) * 5.2)); }
   function gcApp(n)   { return n >= 15 ? '#7a0000' : n >= 10 ? '#a01020' : n >= 5 ? '#BE1E2D' : n >= 3 ? '#d94050' : '#fca5ad'; }
-  function goApp(n)   { return n >= 20 ? 0.85 : n >= 8 ? 0.75 : 0.65; }
+  function goApp(n)   { return n >= 15 ? 0.85 : n >= 6 ? 0.75 : 0.65; }
   function grMoney(t) { return Math.max(6, Math.min(42, Math.sqrt(t / 500) * 3.5)); }
   function goMoney(t) { return t > 100000 ? 0.85 : t > 50000 ? 0.75 : 0.65; }
-  function grCount(n) { return Math.max(4, Math.log(n + 1) * 4.5); }
-  function goCount(n) { return n >= 20 ? 0.85 : n >= 8 ? 0.75 : 0.65; }
+  function grCount(n) { return Math.min(15, Math.max(3, Math.log(n + 1) * 2.5)); }
+  function goCount(n) { return n >= 30 ? 0.58 : n >= 10 ? 0.48 : 0.38; }
 
   // ─── MAP INIT ──────────────────────────────────────────────────────────────
   setProgress(10);
