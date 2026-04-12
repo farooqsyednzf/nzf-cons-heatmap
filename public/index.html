@@ -923,7 +923,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v21';
+  var CACHE_KEY    = 'nzf_map_v22';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
@@ -1348,11 +1348,11 @@ input[type=range]::-moz-range-thumb {
       if (!bucketCount) return;
 
       var cm = L.circleMarker([loc.lat, loc.lng], {
-        radius:      grCount(bucketCount),
+        radius:      grApp(bucketCount),
         fillColor:   COL.DIS,
         color:       'rgba(4,44,83,.4)',
         weight:      1.5, opacity: 1,
-        fillOpacity: goCount(bucketCount),
+        fillOpacity: goApp(bucketCount),
         pane:        'paneDis',
       });
       var wLabel = isAll ? 'since 2025' : 'last ' + weeks + ' wks';
