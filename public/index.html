@@ -175,8 +175,8 @@ a { color: var(--c-brand); }
 .vt-btn {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 14px;
+  gap: 7px;
+  padding: 6px 14px;
   border-radius: 7px;
   border: none;
   background: transparent;
@@ -187,7 +187,31 @@ a { color: var(--c-brand); }
   transition: all var(--anim);
   white-space: nowrap;
   font-family: var(--font);
+  text-align: left;
 }
+.vt-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.vt-label {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: .1px;
+}
+.vt-metric {
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  opacity: .75;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.2px;
+  transition: opacity var(--anim);
+}
+.vt-btn.active .vt-metric { opacity: 1; }
+.vt-btn:not(.active) .vt-metric { opacity: .5; }
 .vt-dot {
   width: 7px; height: 7px;
   border-radius: 50%;
@@ -671,16 +695,20 @@ input[type=range]::-moz-range-thumb {
   .view-toggle {
     order: 10;
     flex: 1 1 100%;
-    justify-content: center;
+    justify-content: stretch;
     background: rgba(255,255,255,.06);
     border-color: rgba(255,255,255,.1);
     padding: 3px;
     border-radius: 9px;
   }
   .vt-btn {
-    flex-shrink: 0; font-size: 11px; padding: 6px 12px;
-    border-radius: 10px;
+    flex: 1; justify-content: center; text-align: center;
+    padding: 6px 8px; border-radius: 10px;
   }
+  .vt-inner { align-items: center; }
+  .vt-label { font-size: 10px; }
+  .vt-metric { font-size: 11px; }
+  .vt-dot { display: none; }
 
   /* Hide view toggle from header on mobile since it's floating */
 
@@ -753,21 +781,30 @@ input[type=range]::-moz-range-thumb {
     <!-- 3-way view toggle -->
     <nav class="view-toggle" aria-label="Map layer selector" id="view-toggle">
       <button class="vt-btn active" data-view="app" id="vt-app" aria-pressed="true">
-        <span class="vt-dot" aria-hidden="true"></span>Applications
+        <span class="vt-dot" aria-hidden="true"></span>
+        <span class="vt-inner">
+          <span class="vt-label">Applications</span>
+          <span class="vt-metric" id="vt-app-metric" aria-live="polite">&nbsp;</span>
+        </span>
       </button>
       <button class="vt-btn active" data-view="don" id="vt-don" aria-pressed="true" aria-busy="true" disabled>
-        <span class="vt-dot" aria-hidden="true"></span>Donations
+        <span class="vt-dot" aria-hidden="true"></span>
+        <span class="vt-inner">
+          <span class="vt-label">Donations</span>
+          <span class="vt-metric" id="vt-don-metric" aria-live="polite">&nbsp;</span>
+        </span>
       </button>
       <button class="vt-btn active" data-view="dis" id="vt-dis" aria-pressed="true" aria-busy="true" disabled>
-        <span class="vt-dot" aria-hidden="true"></span>Distributions
+        <span class="vt-dot" aria-hidden="true"></span>
+        <span class="vt-inner">
+          <span class="vt-label">Distributions</span>
+          <span class="vt-metric" id="vt-dis-metric" aria-live="polite">&nbsp;</span>
+        </span>
       </button>
     </nav>
 
     <!-- Counter (desktop only) -->
-    <div id="counter" aria-live="polite" aria-label="Case count">
-      <span id="counter-num">—</span>
-      <span id="counter-lbl">Cases</span>
-    </div>
+
 
     <!-- Search -->
     <div class="search-wrap" id="search-wrap" role="search">
@@ -886,7 +923,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v15';
+  var CACHE_KEY    = 'nzf_map_v16';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
@@ -1350,67 +1387,58 @@ input[type=range]::-moz-range-thumb {
   }
 
   function updateCounter() {
-    var ctr = document.getElementById('counter');
-    var num = document.getElementById('counter-num');
-    var lbl = document.getElementById('counter-lbl');
-    var pn  = document.getElementById('mob-pill-num');
-    var pl  = document.getElementById('mob-pill-lbl');
-    var active = [];
+    var pn = document.getElementById('mob-pill-num');
+    var pl = document.getElementById('mob-pill-lbl');
+    var weeks    = parseInt(slider.value);
+    var cutoffMs = weeks < MAX_WEEKS ? Date.now() - weeks * 7 * 24 * 60 * 60 * 1000 : null;
+    var firstVal = null, firstPill = null;
 
-    if (ACTIVE_VIEWS.app && DATA_READY.app) {
-      var weeks    = parseInt(slider.value);
-      var cutoffMs = weeks < MAX_WEEKS ? Date.now() - weeks * 7 * 24 * 60 * 60 * 1000 : null;
-      var total    = 0;
-      ALL_DATA.forEach(function(d) {
-        var cs = cutoffMs ? d.cases.filter(function(c) { return c.dateMs && c.dateMs >= cutoffMs; }) : d.cases;
-        total += cs.length;
-      });
-      active.push({ val: total, col: COL.APP,
-        lbl: weeks < MAX_WEEKS ? 'cases \u00B7 last ' + weeks + (weeks===1?' wk':' wks') : 'total cases',
-        pill: weeks < MAX_WEEKS ? 'last '+weeks+'wks' : 'all cases',
-        bg: 'var(--c-brand-pale)', border: '#f0c0c3' });
-    }
-    if (ACTIVE_VIEWS.don && DATA_READY.don) {
-      var donWks = parseInt(slider.value);
-      var donTotal = donWks >= MAX_WEEKS
-        ? Object.values(ALL_DONATIONS).reduce(function(s,d){return s+(d.total||0);},0)
-        : Object.values(ALL_DONATIONS).reduce(function(s,d){return s+((d.wt||[])[donWks-1]||0);},0);
-      var donWlbl = donWks < MAX_WEEKS ? 'last ' + donWks + 'wks' : 'since 2025';
-      active.push({ val: fmtMoney(donTotal), col: COL.DON, lbl: 'donated', pill: donWlbl,
-        bg: 'var(--c-don-pale)', border: '#9FE1CB' });
-    }
-    if (ACTIVE_VIEWS.dis && DATA_READY.dis) {
-      var disWks = parseInt(slider.value);
-      var disTotal = disWks >= MAX_WEEKS
-        ? Object.values(ALL_DISTRIB).reduce(function(s,d){return s+(d.total||0);},0)
-        : Object.values(ALL_DISTRIB).reduce(function(s,d){return s+((d.wt||[])[disWks-1]||0);},0);
-      var disWlbl = disWks < MAX_WEEKS ? 'last ' + disWks + 'wks' : 'since 2025';
-      active.push({ val: fmtMoney(disTotal), col: COL.DIS, lbl: 'distributed', pill: disWlbl,
-        bg: 'var(--c-dis-pale)', border: '#B5D4F4' });
+    // Applications
+    var appM = document.getElementById('vt-app-metric');
+    if (appM) {
+      if (ACTIVE_VIEWS.app && DATA_READY.app) {
+        var total = 0;
+        ALL_DATA.forEach(function(d) {
+          var cs = cutoffMs ? d.cases.filter(function(c) { return c.dateMs && c.dateMs >= cutoffMs; }) : d.cases;
+          total += cs.length;
+        });
+        appM.textContent = total.toLocaleString() + ' case' + (total !== 1 ? 's' : '');
+        if (!firstVal) { firstVal = total.toLocaleString(); firstPill = 'cases'; }
+      } else {
+        appM.textContent = '';
+      }
     }
 
-    if (!active.length) { ctr.style.display = 'none'; return; }
-
-    // Mobile pill: first active layer
-    pn.textContent = active[0].val; pn.style.color = active[0].col;
-    pl.textContent = active[0].pill;
-
-    if (active.length === 1) {
-      num.textContent = active[0].val;
-      num.style.color  = active[0].col;
-      lbl.textContent  = active[0].lbl;
-      ctr.style.borderColor = active[0].border;
-      ctr.style.background  = active[0].bg;
-    } else {
-      // Multi-layer: stack values
-      num.innerHTML = active.map(function(a) {
-        return '<span style="color:'+a.col+';display:block;font-size:13px;font-weight:800;line-height:1.4">'+a.val+'</span>';
-      }).join('');
-      lbl.textContent = active.map(function(a) { return a.lbl.split(' ')[0]; }).join(' \u00B7 ');
-      ctr.style.borderColor = 'var(--c-border)';
-      ctr.style.background  = 'var(--c-bg)';
+    // Donations
+    var donM = document.getElementById('vt-don-metric');
+    if (donM) {
+      if (DATA_READY.don) {
+        var donTotal = weeks >= MAX_WEEKS
+          ? Object.values(ALL_DONATIONS).reduce(function(s,d){return s+(d.total||0);},0)
+          : Object.values(ALL_DONATIONS).reduce(function(s,d){return s+((d.wt||[])[weeks-1]||0);},0);
+        donM.textContent = fmtMoney(donTotal);
+        if (!firstVal && ACTIVE_VIEWS.don) { firstVal = fmtMoney(donTotal); firstPill = 'donated'; }
+      } else {
+        donM.textContent = '…';
+      }
     }
-    ctr.style.display = 'block';
+
+    // Distributions
+    var disM = document.getElementById('vt-dis-metric');
+    if (disM) {
+      if (DATA_READY.dis) {
+        var disTotal = weeks >= MAX_WEEKS
+          ? Object.values(ALL_DISTRIB).reduce(function(s,d){return s+(d.total||0);},0)
+          : Object.values(ALL_DISTRIB).reduce(function(s,d){return s+((d.wt||[])[weeks-1]||0);},0);
+        disM.textContent = fmtMoney(disTotal);
+        if (!firstVal && ACTIVE_VIEWS.dis) { firstVal = fmtMoney(disTotal); firstPill = 'distributed'; }
+      } else {
+        disM.textContent = '…';
+      }
+    }
+
+    // Mobile pill — show first active metric
+    if (pn && firstVal) { pn.textContent = firstVal; pl.textContent = firstPill; }
   }
 
   function enableToggle(view) {
