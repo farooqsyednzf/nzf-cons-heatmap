@@ -923,7 +923,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v18';
+  var CACHE_KEY    = 'nzf_map_v19';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
@@ -1413,29 +1413,29 @@ input[type=range]::-moz-range-thumb {
       }
     }
 
-    // Donations
+    // Donations — show count to match applications
     var donM = document.getElementById('vt-don-metric');
     if (donM) {
       if (DATA_READY.don) {
-        var donTotal = weeks >= MAX_WEEKS
-          ? Object.values(ALL_DONATIONS).reduce(function(s,d){return s+(d.total||0);},0)
-          : Object.values(ALL_DONATIONS).reduce(function(s,d){return s+((d.wt||[])[weeks-1]||0);},0);
-        donM.textContent = fmtMoney(donTotal);
-        if (!firstVal && ACTIVE_VIEWS.don) { firstVal = fmtMoney(donTotal); firstPill = 'donated'; }
+        var donCount = weeks >= MAX_WEEKS
+          ? Object.values(ALL_DONATIONS).reduce(function(s,d){return s+(d.count||0);},0)
+          : Object.values(ALL_DONATIONS).reduce(function(s,d){return s+((d.wc||[])[weeks-1]||0);},0);
+        donM.textContent = donCount.toLocaleString() + ' donation' + (donCount !== 1 ? 's' : '');
+        if (!firstVal && ACTIVE_VIEWS.don) { firstVal = donCount.toLocaleString(); firstPill = 'donations'; }
       } else {
         donM.textContent = '…';
       }
     }
 
-    // Distributions
+    // Distributions — show count to match applications
     var disM = document.getElementById('vt-dis-metric');
     if (disM) {
       if (DATA_READY.dis) {
-        var disTotal = weeks >= MAX_WEEKS
-          ? Object.values(ALL_DISTRIB).reduce(function(s,d){return s+(d.total||0);},0)
-          : Object.values(ALL_DISTRIB).reduce(function(s,d){return s+((d.wt||[])[weeks-1]||0);},0);
-        disM.textContent = fmtMoney(disTotal);
-        if (!firstVal && ACTIVE_VIEWS.dis) { firstVal = fmtMoney(disTotal); firstPill = 'distributed'; }
+        var disCount = weeks >= MAX_WEEKS
+          ? Object.values(ALL_DISTRIB).reduce(function(s,d){return s+(d.count||0);},0)
+          : Object.values(ALL_DISTRIB).reduce(function(s,d){return s+((d.wc||[])[weeks-1]||0);},0);
+        disM.textContent = disCount.toLocaleString() + ' distribution' + (disCount !== 1 ? 's' : '');
+        if (!firstVal && ACTIVE_VIEWS.dis) { firstVal = disCount.toLocaleString(); firstPill = 'distributions'; }
       } else {
         disM.textContent = '…';
       }
