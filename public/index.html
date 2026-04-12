@@ -923,7 +923,7 @@ input[type=range]::-moz-range-thumb {
 
   // ─── CONSTANTS ─────────────────────────────────────────────────────────────
   var DATA_URL     = '/api/map-data';
-  var CACHE_KEY    = 'nzf_map_v19';
+  var CACHE_KEY    = 'nzf_map_v20';
   var CACHE_TTL_MS = 23 * 60 * 60 * 1000; // 23 hours
   var RADIUS_KM    = 10;
   var MAX_WEEKS    = 52;
@@ -1062,10 +1062,17 @@ input[type=range]::-moz-range-thumb {
     }
   ).addTo(map);
 
-  var markerLayer   = L.layerGroup().addTo(map);
-  var donLayer      = L.layerGroup().addTo(map);
-  var disLayer      = L.layerGroup().addTo(map);
-  var highlightLayer = L.layerGroup().addTo(map); // search radius highlight ring
+  // Custom panes — higher z-index = rendered on top
+  // Order: highlight (bottom) → donations → distributions → applications (top)
+  map.createPane('paneHighlight'); map.getPane('paneHighlight').style.zIndex = 401;
+  map.createPane('paneDon');       map.getPane('paneDon').style.zIndex       = 402;
+  map.createPane('paneDis');       map.getPane('paneDis').style.zIndex       = 403;
+  map.createPane('paneApp');       map.getPane('paneApp').style.zIndex       = 404;
+
+  var markerLayer    = L.layerGroup({ pane: 'paneApp' }).addTo(map);
+  var donLayer       = L.layerGroup({ pane: 'paneDon' }).addTo(map);
+  var disLayer       = L.layerGroup({ pane: 'paneDis' }).addTo(map);
+  var highlightLayer = L.layerGroup({ pane: 'paneHighlight' }).addTo(map);
 
   // ─── CACHE (localStorage, 23h TTL) ─────────────────────────────────────────
   function loadCache() {
@@ -1265,6 +1272,7 @@ input[type=range]::-moz-range-thumb {
         weight:      1.5,
         opacity:     1,
         fillOpacity: goApp(n),
+        pane:        'paneApp',
       });
 
       cm.bindTooltip(
@@ -1308,6 +1316,7 @@ input[type=range]::-moz-range-thumb {
         color:       'rgba(8,80,65,.4)',
         weight:      1.5, opacity: 1,
         fillOpacity: goCount(bucketCount),
+        pane:        'paneDon',
       });
       var wLabel = isAll ? 'since 2025' : 'last ' + weeks + ' wks';
       cm.bindTooltip(
@@ -1344,6 +1353,7 @@ input[type=range]::-moz-range-thumb {
         color:       'rgba(4,44,83,.4)',
         weight:      1.5, opacity: 1,
         fillOpacity: goCount(bucketCount),
+        pane:        'paneDis',
       });
       var wLabel = isAll ? 'since 2025' : 'last ' + weeks + ' wks';
       cm.bindTooltip(
