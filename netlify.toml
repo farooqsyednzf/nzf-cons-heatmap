@@ -1,24 +1,20 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # NZF Community Need Map — Netlify Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-
 [build]
   publish   = "public"
   functions = "netlify/functions"
   # No build command needed. The postcode data file is committed to the repo.
   # Run `node scripts/build-postcodes.js` once locally to generate it (see README).
-
 [build.environment]
   NODE_VERSION = "20"
-
 # ── Global functions config: use Node 20 runtime for all functions ────────────
 [functions]
   node_bundler = "esbuild"
-
-# ── Scheduled daily refresh (4 am AEST = 18:00 UTC) ─────────────────────────
+# ── Scheduled daily refresh (7 am AEST = 21:00 UTC) ─────────────────────────
+#    Zoho Analytics syncs around 5 am AEST, so 7 am ensures fresh data.
 [functions."refresh-data-background"]
-  schedule = "0 18 * * *"
-
+  schedule = "0 21 * * *"
 # ── Security headers for all responses ───────────────────────────────────────
 [[headers]]
   for = "/*"
@@ -29,13 +25,11 @@
     Permissions-Policy         = "geolocation=(), microphone=(), camera=()"
     Strict-Transport-Security  = "max-age=31536000; includeSubDomains; preload"
     Content-Security-Policy    = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: blob: https://*.basemaps.cartocdn.com https://*.cartocdn.com; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'"
-
 # ── Long-lived cache for static assets ───────────────────────────────────────
 [[headers]]
   for = "/assets/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
-
 # ── Clean URL routing: /api/* → /.netlify/functions/* ─────────────────────────
 [[redirects]]
   from   = "/api/:func"
