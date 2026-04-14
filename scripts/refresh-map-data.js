@@ -34,15 +34,15 @@ if (missing.length) {
 }
 
 const ENV = {
-  ZOHO_CLIENT_ID:     process.env.ZOHO_CLIENT_ID,
-  ZOHO_CLIENT_SECRET: process.env.ZOHO_CLIENT_SECRET,
-  ZOHO_REFRESH_TOKEN: process.env.ZOHO_REFRESH_TOKEN,
-  ZOHO_ORG_ID:        process.env.ZOHO_ORG_ID,
-  ZOHO_WS_ID:         process.env.ZOHO_WS_ID,
-  NETLIFY_SITE_ID:    process.env.NETLIFY_SITE_ID,
+  ZOHO_CLIENT_ID:      process.env.ZOHO_CLIENT_ID,
+  ZOHO_CLIENT_SECRET:  process.env.ZOHO_CLIENT_SECRET,
+  ZOHO_REFRESH_TOKEN:  process.env.ZOHO_REFRESH_TOKEN,
+  ZOHO_ORG_ID:         process.env.ZOHO_ORG_ID,
+  ZOHO_WS_ID:          process.env.ZOHO_WS_ID,
+  NETLIFY_SITE_ID:     process.env.NETLIFY_SITE_ID,
   NETLIFY_BLOBS_TOKEN: process.env.NETLIFY_BLOBS_TOKEN,
-  ANTHROPIC_API_KEY:  process.env.ANTHROPIC_API_KEY || null,
-  MAX_SUMMARIES:      parseInt(process.env.MAX_SUMMARIES_PER_RUN || '50', 10),
+  ANTHROPIC_API_KEY:   process.env.ANTHROPIC_API_KEY || null,
+  MAX_SUMMARIES:       parseInt(process.env.MAX_SUMMARIES_PER_RUN || '50', 10),
 };
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -61,7 +61,6 @@ const BLOB_OUTPUT = 'aggregated-v2';
 const BLOB_STATE  = 'cases-state-v1';
 
 // ─── IMPORT LOCAL LIB ─────────────────────────────────────────────────────────
-// Reuse the same transform and postcode helpers as the Netlify function
 const {
   mapStageToStatus, hasDvContent,
   extractTags, hashText,
@@ -93,6 +92,20 @@ async function main() {
     loadBlobJson(BLOB_STATE).then(v => v || {}),
   ]);
   console.log(`[refresh] ${caseRows.length} case rows, ${clientRows.length} client rows | DV flags: ${dvNoteIds.size} | cached: ${Object.keys(casesState).length}`);
+
+  // Log actual column headers so we can verify field name mappings
+  if (caseRows.length > 0) {
+    console.log('[refresh] Case columns:', Object.keys(caseRows[0]).join(', '));
+    console.log('[refresh] Case sample (first row keys+values):', JSON.stringify(Object.fromEntries(
+      Object.entries(caseRows[0]).filter(([k]) => ['id','stage','postcode','post_code','suburb','state','mailing_zip','mailing_city','mailing_state','contact_name','created_date'].includes(k))
+    )));
+  }
+  if (clientRows.length > 0) {
+    console.log('[refresh] Client columns:', Object.keys(clientRows[0]).join(', '));
+    console.log('[refresh] Client sample (first row keys+values):', JSON.stringify(Object.fromEntries(
+      Object.entries(clientRows[0]).filter(([k]) => ['id','name','full_name','postcode','post_code','mailing_zip','mailing_city','mailing_state','suburb','state'].includes(k))
+    )));
+  }
 
   const clientMap    = buildClientMap(clientRows);
   const caseToClient = buildCaseToClientMap(caseRows);
@@ -135,7 +148,7 @@ async function main() {
 main().catch(err => {
   console.error('[refresh] Fatal error:', err.message);
   console.error(err.stack);
-  process.exit(1);  // Non-zero exit causes GitHub Actions to mark the run as failed
+  process.exit(1);
 });
 
 // ─── ZOHO TOKEN ───────────────────────────────────────────────────────────────
@@ -146,13 +159,11 @@ async function refreshZohoToken() {
     client_secret: ENV.ZOHO_CLIENT_SECRET,
     refresh_token: ENV.ZOHO_REFRESH_TOKEN,
   });
-
   const resp = await fetch(ZOHO_TOKEN_URL, {
     method:  'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body:    params.toString(),
   });
-
   if (!resp.ok) throw new Error(`Zoho token endpoint returned HTTP ${resp.status}`);
   const data = await resp.json();
   if (!data.access_token) throw new Error('Zoho token response missing access_token');
@@ -212,19 +223,31 @@ async function fetchDvCaseIdsFromCrm() {
 }
 
 // ─── CRM: CLIENT + CASE MAPS ─────────────────────────────────────────────────
+// Build a lookup from client FULL NAME → location data.
+// Cases reference clients by display name (contact_name), so we key by name
+// rather than by ID to allow the join in buildRawCases.
 function buildClientMap(clientRows) {
   const map = {};
   for (const r of clientRows) {
-    if (!r.id) continue;
-    map[r.id] = {
-      postcode: r.mailing_zip || r.postcode || r.post_code || '',
-      suburb:   r.mailing_city || r.suburb || '',
-      state:    r.mailing_state || r.state || '',
-    };
+    // Try every plausible normalised name field from Zoho Analytics exports
+    const name = r.full_name || r.name || r.contact_name ||
+                 ((r.first_name || '') + ' ' + (r.last_name || '')).trim() || null;
+    if (!name) continue;
+
+    const postcode = r.mailing_zip   || r.zip_code   || r.postal_code ||
+                     r.postcode      || r.post_code  || '';
+    const suburb   = r.mailing_city  || r.city       || r.suburb      || '';
+    const state    = r.mailing_state || r.state      || '';
+
+    map[name] = { postcode, suburb, state };
+
+    // Also key by ID as fallback in case cases export a contact ID column
+    if (r.id) map[r.id] = { postcode, suburb, state };
   }
   return map;
 }
 
+// Map case ID → contact display name (used to link distributions → client location)
 function buildCaseToClientMap(caseRows) {
   const map = {};
   for (const r of caseRows) {
@@ -233,6 +256,7 @@ function buildCaseToClientMap(caseRows) {
   return map;
 }
 
+// Filter cases by date and attach client location data
 function buildRawCases(caseRows, clientMap) {
   const CUTOFF = new Date('2025-01-01').getTime();
   return caseRows.filter(r => {
@@ -240,16 +264,20 @@ function buildRawCases(caseRows, clientMap) {
     const d = new Date(r.created_date);
     return !isNaN(d) && d.getTime() >= CUTOFF;
   }).map(r => {
-    const client = clientMap[r.contact_name] || {};
+    // Look up client by contact name — clientMap is keyed by name (and ID as fallback)
+    const client = clientMap[r.contact_name] || clientMap[r.contact_id] || {};
+
     return {
       id:           r.id,
-      stage:        r.stage || r.case_stage || '',
-      description:  r.description || '',
+      stage:        r.stage || r.case_stage || r.status || '',
+      description:  r.description || r.case_description || '',
       dv_flag:      r.dv_flag || 'false',
-      postcode:     r.postcode || r.post_code || client.postcode || '',
-      suburb:       r.suburb   || client.suburb || '',
-      state:        r.state    || client.state  || '',
-      created_date: r.created_date,
+      // Postcode: try directly on case row first, then fall back to client record
+      postcode:     r.postcode      || r.post_code   || r.mailing_zip  ||
+                    r.zip_code      || r.postal_code  || client.postcode || '',
+      suburb:       r.suburb        || r.mailing_city || r.city         || client.suburb || '',
+      state:        r.state         || r.mailing_state                  || client.state  || '',
+      created_date: r.created_date  || r.created_time || '',
     };
   });
 }
@@ -344,8 +372,9 @@ function aggregateDistributionsFromCsv(csv, caseToClient, clientMap) {
     const amount  = parseFloat((vals[amtIdx] || '').replace(/[^0-9.]/g, '')) || 0;
     if (!caseId || amount <= 0) continue;
 
-    const clientId = caseToClient[caseId];
-    const client   = clientId ? clientMap[clientId] : null;
+    // caseToClient maps case ID → contact name; clientMap is keyed by name
+    const contactName = caseToClient[caseId];
+    const client      = contactName ? clientMap[contactName] : null;
     if (!client?.postcode) continue;
 
     const pc = client.postcode;
