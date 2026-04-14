@@ -8,13 +8,17 @@
   # Run `node scripts/build-postcodes.js` once locally to generate it (see README).
 [build.environment]
   NODE_VERSION = "20"
+
 # ── Global functions config: use Node 20 runtime for all functions ────────────
 [functions]
   node_bundler = "esbuild"
-# ── Scheduled daily refresh (7 am AEST = 21:00 UTC) ─────────────────────────
-#    Zoho Analytics syncs around 5 am AEST, so 7 am ensures fresh data.
+
+# ── Daily refresh is now handled by GitHub Actions (/.github/workflows/refresh-map-data.yml)
+#    Runs at 7:00 AM AEST (21:00 UTC) — after Zoho Analytics syncs at ~5 AM AEST.
+#    The schedule has been removed from here to avoid conflicts.
 [functions."refresh-data-background"]
-  schedule = "0 21 * * *"
+  timeout = 900
+
 # ── Security headers for all responses ───────────────────────────────────────
 [[headers]]
   for = "/*"
@@ -25,11 +29,13 @@
     Permissions-Policy         = "geolocation=(), microphone=(), camera=()"
     Strict-Transport-Security  = "max-age=31536000; includeSubDomains; preload"
     Content-Security-Policy    = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: blob: https://*.basemaps.cartocdn.com https://*.cartocdn.com; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'"
+
 # ── Long-lived cache for static assets ───────────────────────────────────────
 [[headers]]
   for = "/assets/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
+
 # ── Clean URL routing: /api/* → /.netlify/functions/* ─────────────────────────
 [[redirects]]
   from   = "/api/:func"
