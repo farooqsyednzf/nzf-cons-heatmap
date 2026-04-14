@@ -93,26 +93,18 @@ async function main() {
   ]);
   console.log(`[refresh] ${caseRows.length} case rows, ${clientRows.length} client rows | DV flags: ${dvNoteIds.size} | cached: ${Object.keys(casesState).length}`);
 
-  // Log actual column headers so we can verify field name mappings
-  if (caseRows.length > 0) {
-    console.log('[refresh] Case columns:', Object.keys(caseRows[0]).join(', '));
-    console.log('[refresh] Case sample (first row keys+values):', JSON.stringify(Object.fromEntries(
-      Object.entries(caseRows[0]).filter(([k]) => ['id','stage','postcode','post_code','suburb','state','mailing_zip','mailing_city','mailing_state','contact_name','created_date'].includes(k))
-    )));
-  }
-  if (clientRows.length > 0) {
-    console.log('[refresh] Client columns:', Object.keys(clientRows[0]).join(', '));
-    console.log('[refresh] Client sample (first row keys+values):', JSON.stringify(Object.fromEntries(
-      Object.entries(clientRows[0]).filter(([k]) => ['id','name','full_name','postcode','post_code','mailing_zip','mailing_city','mailing_state','suburb','state'].includes(k))
-    )));
-  }
-
   const clientMap    = buildClientMap(clientRows);
   const caseToClient = buildCaseToClientMap(caseRows);
   const rawCases     = buildRawCases(caseRows, clientMap);
   caseRows.length    = 0;
   clientRows.length  = 0;
   console.log(`[refresh] ${rawCases.length} cases after date filter`);
+
+  // Log a sample raw case so we can verify location fields are resolving
+  if (rawCases.length > 0) {
+    const sample = rawCases[0];
+    console.log(`[refresh] Sample case: stage=${sample.stage} postcode=${sample.postcode} suburb=${sample.suburb} state=${sample.state} created=${sample.created_date}`);
+  }
 
   // 2b. Donations + Distributions in parallel
   console.log('[refresh] Fetching donations + distributions...');
@@ -222,16 +214,16 @@ async function fetchDvCaseIdsFromCrm() {
   return dvIds;
 }
 
-// ─── CRM: CLIENT + CASE MAPS ─────────────────────────────────────────────────
-// Build a lookup from client FULL NAME → location data.
-// Cases reference clients by display name (contact_name), so we key by name
-// rather than by ID to allow the join in buildRawCases.
+// ─── CLIENT + CASE MAPS ───────────────────────────────────────────────────────
+// Build lookup: client full_name → location data
+// Cases reference clients by display name (client_name field), so we key by name.
 function buildClientMap(clientRows) {
   const map = {};
   for (const r of clientRows) {
-    // Try every plausible normalised name field from Zoho Analytics exports
-    const name = r.full_name || r.name || r.contact_name ||
-                 ((r.first_name || '') + ' ' + (r.last_name || '')).trim() || null;
+    // full_name is confirmed available in client rows
+    const name = r.full_name ||
+                 ((r.first_name || '') + ' ' + (r.last_name || '')).trim() ||
+                 r.name || null;
     if (!name) continue;
 
     const postcode = r.mailing_zip   || r.zip_code   || r.postal_code ||
@@ -240,44 +232,47 @@ function buildClientMap(clientRows) {
     const state    = r.mailing_state || r.state      || '';
 
     map[name] = { postcode, suburb, state };
-
-    // Also key by ID as fallback in case cases export a contact ID column
+    // Also key by ID as fallback
     if (r.id) map[r.id] = { postcode, suburb, state };
   }
   return map;
 }
 
-// Map case ID → contact display name (used to link distributions → client location)
+// Map case ID → client display name (used to link distributions → client location)
+// Field is client_name (confirmed in case columns log)
 function buildCaseToClientMap(caseRows) {
   const map = {};
   for (const r of caseRows) {
-    if (r.id && r.contact_name) map[r.id] = r.contact_name;
+    if (r.id && r.client_name) map[r.id] = r.client_name;
   }
   return map;
 }
 
-// Filter cases by date and attach client location data
+// Filter cases by date and attach client location.
+// FIXED: Zoho Analytics exports "created_time" not "created_date"
+// FIXED: Cases link to clients via "client_name" not "contact_name"
 function buildRawCases(caseRows, clientMap) {
   const CUTOFF = new Date('2025-01-01').getTime();
   return caseRows.filter(r => {
-    if (!r.created_date) return false;
-    const d = new Date(r.created_date);
+    // Zoho Analytics field is created_time, not created_date
+    const dateStr = r.created_time || r.created_date || '';
+    if (!dateStr) return false;
+    const d = new Date(dateStr);
     return !isNaN(d) && d.getTime() >= CUTOFF;
   }).map(r => {
-    // Look up client by contact name — clientMap is keyed by name (and ID as fallback)
-    const client = clientMap[r.contact_name] || clientMap[r.contact_id] || {};
+    // Look up client by name — clientMap is keyed by full_name
+    const client = clientMap[r.client_name] || clientMap[r.contact_name] || {};
 
     return {
       id:           r.id,
-      stage:        r.stage || r.case_stage || r.status || '',
-      description:  r.description || r.case_description || '',
-      dv_flag:      r.dv_flag || 'false',
-      // Postcode: try directly on case row first, then fall back to client record
-      postcode:     r.postcode      || r.post_code   || r.mailing_zip  ||
-                    r.zip_code      || r.postal_code  || client.postcode || '',
-      suburb:       r.suburb        || r.mailing_city || r.city         || client.suburb || '',
-      state:        r.state         || r.mailing_state                  || client.state  || '',
-      created_date: r.created_date  || r.created_time || '',
+      stage:        r.stage || r.case_stage || '',
+      description:  r.description || '',
+      dv_flag:      r.dv_flag || r.domestic_violence || 'false',
+      postcode:     r.postcode     || r.post_code   || r.mailing_zip  || client.postcode || '',
+      suburb:       r.suburb       || r.mailing_city                  || client.suburb   || '',
+      state:        r.state        || r.mailing_state                 || client.state    || '',
+      // Store as created_date for processCases consistency
+      created_date: r.created_time || r.created_date || '',
     };
   });
 }
@@ -372,9 +367,9 @@ function aggregateDistributionsFromCsv(csv, caseToClient, clientMap) {
     const amount  = parseFloat((vals[amtIdx] || '').replace(/[^0-9.]/g, '')) || 0;
     if (!caseId || amount <= 0) continue;
 
-    // caseToClient maps case ID → contact name; clientMap is keyed by name
-    const contactName = caseToClient[caseId];
-    const client      = contactName ? clientMap[contactName] : null;
+    // caseToClient maps case ID → client name; clientMap is keyed by name
+    const clientName = caseToClient[caseId];
+    const client     = clientName ? clientMap[clientName] : null;
     if (!client?.postcode) continue;
 
     const pc = client.postcode;
@@ -485,7 +480,7 @@ function splitCsvLine(line) {
   return result;
 }
 
-// ─── NETLIFY BLOBS (raw HTTP — no SDK needed) ─────────────────────────────────
+// ─── NETLIFY BLOBS ────────────────────────────────────────────────────────────
 async function loadBlobJson(key) {
   try {
     const url  = `${BLOB_API}/${ENV.NETLIFY_SITE_ID}/${STORE_PATH}/${key}`;
