@@ -50,17 +50,15 @@ exports.handler = async (event) => {
 
       if (resp.ok) {
         const parsed = await resp.json();
-        const ageMs  = Date.now() - new Date(parsed.generatedAt || 0).getTime();
 
-        if (ageMs < 26 * 60 * 60 * 1000) {
-          if (!_memGeneratedAt || parsed.generatedAt !== _memGeneratedAt) {
-            _memCache       = parsed;
-            _memGeneratedAt = parsed.generatedAt;
-          }
-          return ok(parsed, headers, 'BLOB');
-        } else {
-          console.log('[map-data] Blob data too old:', Math.round(ageMs / 3600000) + 'h');
+        // Serve whatever is in the blob — age does not matter.
+        // The scheduled function keeps it fresh; serving old data
+        // is always better than serving nothing.
+        if (!_memGeneratedAt || parsed.generatedAt !== _memGeneratedAt) {
+          _memCache       = parsed;
+          _memGeneratedAt = parsed.generatedAt;
         }
+        return ok(parsed, headers, 'BLOB');
       } else {
         console.log('[map-data] Blob fetch HTTP', resp.status);
       }
