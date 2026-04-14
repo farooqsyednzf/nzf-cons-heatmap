@@ -84,14 +84,17 @@ async function main() {
   _zohoToken = await refreshZohoToken();
   console.log('[refresh] Zoho access token obtained');
 
-  // 2a. Cases + Clients + DV flags + cached state — all in parallel
-  console.log('[refresh] Fetching cases, clients, DV notes, cached state...');
-  const [[caseRows, clientRows], dvNoteIds, casesState] = await Promise.all([
+  // 2a. Cases + Clients + cached state — all in parallel
+  // NOTE: DV detection now uses the domestic_violence field on the client record
+  // (confirmed in client columns). The CRM notes query has been removed because
+  // "contains:DV" matches the substring in words like "individual/provide/advise"
+  // and was falsely flagging 99.9% of cases.
+  console.log('[refresh] Fetching cases, clients, cached state...');
+  const [[caseRows, clientRows], casesState] = await Promise.all([
     Promise.all([fetchViewRows(VIEW_CASES), fetchViewRows(VIEW_CLIENTS)]),
-    fetchDvCaseIdsFromCrm(),
     loadBlobJson(BLOB_STATE).then(v => v || {}),
   ]);
-  console.log(`[refresh] ${caseRows.length} case rows, ${clientRows.length} client rows | DV flags: ${dvNoteIds.size} | cached: ${Object.keys(casesState).length}`);
+  console.log(`[refresh] ${caseRows.length} case rows, ${clientRows.length} client rows | cached: ${Object.keys(casesState).length}`);
 
   const clientMap    = buildClientMap(clientRows);
   const caseToClient = buildCaseToClientMap(caseRows);
@@ -100,11 +103,14 @@ async function main() {
   clientRows.length  = 0;
   console.log(`[refresh] ${rawCases.length} cases after date filter`);
 
-  // Log a sample raw case so we can verify location fields are resolving
+  // Diagnostic: log sample case and client name matching
   if (rawCases.length > 0) {
-    const sample = rawCases[0];
-    console.log(`[refresh] Sample case: stage=${sample.stage} postcode=${sample.postcode} suburb=${sample.suburb} state=${sample.state} created=${sample.created_date}`);
+    const s = rawCases[0];
+    console.log(`[refresh] Sample raw case: client_name_key="${s._clientNameKey}" postcode="${s.postcode}" suburb="${s.suburb}" state="${s.state}" dv="${s.dv_flag}"`);
   }
+  console.log(`[refresh] clientMap size: ${Object.keys(clientMap).length} entries`);
+  const sampleKeys = Object.keys(clientMap).slice(0, 3);
+  console.log(`[refresh] Sample clientMap keys: ${sampleKeys.join(' | ')}`);
 
   // 2b. Donations + Distributions in parallel
   console.log('[refresh] Fetching donations + distributions...');
@@ -116,9 +122,9 @@ async function main() {
   const distributions = aggregateDistributionsFromCsv(disCsv, caseToClient, clientMap);
   console.log(`[refresh] ${Object.keys(donations).length} donation postcodes, ${Object.keys(distributions).length} distribution postcodes`);
 
-  // 3. Process cases
+  // 3. Process cases — pass empty Set for dvNoteIds (DV now from client record)
   console.log('[refresh] Processing cases...');
-  const { postcodes, updatedState, stats } = await processCases(rawCases, dvNoteIds, casesState);
+  const { postcodes, updatedState, stats } = await processCases(rawCases, new Set(), casesState);
   console.log(`[refresh] ${postcodes.length} postcodes | new: ${stats.newSummaries} | reused: ${stats.reused} | DV removed: ${stats.dvFiltered} | no location: ${stats.noLocation}`);
 
   // 4. Write to Netlify Blobs
@@ -195,32 +201,12 @@ async function fetchViewCsv(viewId) {
   return resp.text();
 }
 
-// ─── CRM: DV CASE IDS ─────────────────────────────────────────────────────────
-async function fetchDvCaseIdsFromCrm() {
-  const dvIds = new Set();
-  let page = 1;
-  while (true) {
-    const url  = `${ZOHO_CRM_BASE}/Notes?fields=Parent_Id&criteria=(Note_Content:contains:DV)&page=${page}&per_page=200`;
-    const resp = await fetch(url, {
-      headers: { 'Authorization': `Zoho-oauthtoken ${_zohoToken}` },
-    });
-    if (!resp.ok) break;
-    const data = await resp.json();
-    const records = data.data || [];
-    records.forEach(r => { if (r.Parent_Id?.id) dvIds.add(r.Parent_Id.id); });
-    if (!data.info?.more_records) break;
-    page++;
-  }
-  return dvIds;
-}
-
 // ─── CLIENT + CASE MAPS ───────────────────────────────────────────────────────
-// Build lookup: client full_name → location data
-// Cases reference clients by display name (client_name field), so we key by name.
+// Build lookup: client full_name → { postcode, suburb, state, dv }
+// DV flag comes from domestic_violence field on the client record (confirmed in columns).
 function buildClientMap(clientRows) {
   const map = {};
   for (const r of clientRows) {
-    // full_name is confirmed available in client rows
     const name = r.full_name ||
                  ((r.first_name || '') + ' ' + (r.last_name || '')).trim() ||
                  r.name || null;
@@ -230,16 +216,18 @@ function buildClientMap(clientRows) {
                      r.postcode      || r.post_code  || '';
     const suburb   = r.mailing_city  || r.city       || r.suburb      || '';
     const state    = r.mailing_state || r.state      || '';
+    // domestic_violence field confirmed in client columns
+    const dv       = r.domestic_violence || 'false';
 
-    map[name] = { postcode, suburb, state };
+    const entry = { postcode, suburb, state, dv };
+    map[name]  = entry;
     // Also key by ID as fallback
-    if (r.id) map[r.id] = { postcode, suburb, state };
+    if (r.id) map[r.id] = entry;
   }
   return map;
 }
 
-// Map case ID → client display name (used to link distributions → client location)
-// Field is client_name (confirmed in case columns log)
+// Map case ID → client display name
 function buildCaseToClientMap(caseRows) {
   const map = {};
   for (const r of caseRows) {
@@ -248,31 +236,29 @@ function buildCaseToClientMap(caseRows) {
   return map;
 }
 
-// Filter cases by date and attach client location.
-// FIXED: Zoho Analytics exports "created_time" not "created_date"
-// FIXED: Cases link to clients via "client_name" not "contact_name"
+// Filter cases by date and attach client location + DV flag
 function buildRawCases(caseRows, clientMap) {
   const CUTOFF = new Date('2025-01-01').getTime();
   return caseRows.filter(r => {
-    // Zoho Analytics field is created_time, not created_date
     const dateStr = r.created_time || r.created_date || '';
     if (!dateStr) return false;
     const d = new Date(dateStr);
     return !isNaN(d) && d.getTime() >= CUTOFF;
   }).map(r => {
-    // Look up client by name — clientMap is keyed by full_name
     const client = clientMap[r.client_name] || clientMap[r.contact_name] || {};
 
     return {
-      id:           r.id,
-      stage:        r.stage || r.case_stage || '',
-      description:  r.description || '',
-      dv_flag:      r.dv_flag || r.domestic_violence || 'false',
-      postcode:     r.postcode     || r.post_code   || r.mailing_zip  || client.postcode || '',
-      suburb:       r.suburb       || r.mailing_city                  || client.suburb   || '',
-      state:        r.state        || r.mailing_state                 || client.state    || '',
-      // Store as created_date for processCases consistency
-      created_date: r.created_time || r.created_date || '',
+      id:              r.id,
+      stage:           r.stage || r.case_stage || '',
+      description:     r.description || '',
+      // DV: use client's domestic_violence field — more reliable than CRM notes query
+      dv_flag:         client.dv || r.dv_flag || 'false',
+      postcode:        r.postcode    || r.post_code   || r.mailing_zip  || client.postcode || '',
+      suburb:          r.suburb      || r.mailing_city                  || client.suburb   || '',
+      state:           r.state       || r.mailing_state                 || client.state    || '',
+      created_date:    r.created_time || r.created_date || '',
+      // Store key used for lookup — helps diagnose mismatches in logs
+      _clientNameKey:  r.client_name || r.contact_name || '',
     };
   });
 }
@@ -367,7 +353,6 @@ function aggregateDistributionsFromCsv(csv, caseToClient, clientMap) {
     const amount  = parseFloat((vals[amtIdx] || '').replace(/[^0-9.]/g, '')) || 0;
     if (!caseId || amount <= 0) continue;
 
-    // caseToClient maps case ID → client name; clientMap is keyed by name
     const clientName = caseToClient[caseId];
     const client     = clientName ? clientMap[clientName] : null;
     if (!client?.postcode) continue;
@@ -405,6 +390,8 @@ async function processCases(rawCases, dvNoteIds, casesState) {
     const caseId      = row.id;
     const description = row.description;
 
+    // DV check: client domestic_violence field + description keyword scan
+    // (CRM notes query removed — was matching "DV" substring in common words)
     const isDv = row.dv_flag === 'true' || hasDvContent(description) || dvNoteIds.has(caseId);
     if (isDv) { stats.dvFiltered++; continue; }
 
