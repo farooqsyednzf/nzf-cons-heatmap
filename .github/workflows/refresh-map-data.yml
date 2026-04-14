@@ -15,14 +15,14 @@ jobs:
     timeout-minutes: 30
 
     env:
-      ZOHO_CLIENT_ID:      ${{ secrets.ZOHO_CLIENT_ID }}
-      ZOHO_CLIENT_SECRET:  ${{ secrets.ZOHO_CLIENT_SECRET }}
-      ZOHO_REFRESH_TOKEN:  ${{ secrets.ZOHO_REFRESH_TOKEN }}
-      ZOHO_ORG_ID:         ${{ secrets.ZOHO_ORG_ID }}
-      ZOHO_WS_ID:          ${{ secrets.ZOHO_WS_ID }}
-      NETLIFY_SITE_ID:     ${{ secrets.NETLIFY_SITE_ID }}
-      NETLIFY_BLOBS_TOKEN: ${{ secrets.NETLIFY_BLOBS_TOKEN }}
-      ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+      ZOHO_CLIENT_ID:        ${{ secrets.ZOHO_CLIENT_ID }}
+      ZOHO_CLIENT_SECRET:    ${{ secrets.ZOHO_CLIENT_SECRET }}
+      ZOHO_REFRESH_TOKEN:    ${{ secrets.ZOHO_REFRESH_TOKEN }}
+      ZOHO_ORG_ID:           ${{ secrets.ZOHO_ORG_ID }}
+      ZOHO_WS_ID:            ${{ secrets.ZOHO_WS_ID }}
+      NETLIFY_SITE_ID:       ${{ secrets.NETLIFY_SITE_ID }}
+      NETLIFY_BLOBS_TOKEN:   ${{ secrets.NETLIFY_BLOBS_TOKEN }}
+      ANTHROPIC_API_KEY:     ${{ secrets.ANTHROPIC_API_KEY }}
       MAX_SUMMARIES_PER_RUN: ${{ secrets.MAX_SUMMARIES_PER_RUN }}
 
     steps:
@@ -33,10 +33,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Run data refresh
         run: node scripts/refresh-map-data.js
