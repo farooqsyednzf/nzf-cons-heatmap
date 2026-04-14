@@ -3,7 +3,8 @@
 /**
  * refresh-data.js — NZF Community Map daily data pipeline
  *
- * Runs at 4:00 AM AEST (18:00 UTC) every day.
+ * Runs at 7:00 AM AEST (21:00 UTC) every day.
+ * Zoho Analytics syncs around 5 AM AEST, so 7 AM ensures the latest data.
  * Uses the Zoho Analytics non-bulk view data API (no bulk scopes needed).
  * Cases and Clients are fetched once and reused across all three data types.
  */
@@ -71,7 +72,7 @@ function getBlobStore() {
 }
 
 // ─── HANDLER ─────────────────────────────────────────────────────────────────
-exports.handler = schedule('0 18 * * *', async () => {
+exports.handler = schedule('0 21 * * *', async () => {
   const start = Date.now();
   console.log('[refresh] Starting daily refresh');
 
