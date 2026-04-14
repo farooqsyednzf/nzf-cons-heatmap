@@ -1,0 +1,48 @@
+name: Refresh NZF Map Data
+
+on:
+  schedule:
+    # 7:00 AM AEST daily (21:00 UTC)
+    # Zoho Analytics syncs around 5 AM AEST, so 7 AM ensures fresh data
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+    # Allow manual triggering from GitHub Actions UI at any time
+
+jobs:
+  refresh:
+    name: Fetch Zoho data and update Netlify Blob
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      ZOHO_CLIENT_ID:      ${{ secrets.ZOHO_CLIENT_ID }}
+      ZOHO_CLIENT_SECRET:  ${{ secrets.ZOHO_CLIENT_SECRET }}
+      ZOHO_REFRESH_TOKEN:  ${{ secrets.ZOHO_REFRESH_TOKEN }}
+      ZOHO_ORG_ID:         ${{ secrets.ZOHO_ORG_ID }}
+      ZOHO_WS_ID:          ${{ secrets.ZOHO_WS_ID }}
+      NETLIFY_SITE_ID:     ${{ secrets.NETLIFY_SITE_ID }}
+      NETLIFY_BLOBS_TOKEN: ${{ secrets.NETLIFY_BLOBS_TOKEN }}
+      ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+      MAX_SUMMARIES_PER_RUN: ${{ secrets.MAX_SUMMARIES_PER_RUN }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run data refresh
+        run: node scripts/refresh-map-data.js
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Map data refresh failed. Check logs above for details."
+          echo "The Netlify map will continue serving the last successful blob until this is resolved."
