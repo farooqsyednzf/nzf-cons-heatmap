@@ -60,6 +60,9 @@ const STORE_PATH  = 'site:nzf-map';
 const BLOB_OUTPUT = 'aggregated-v2';
 const BLOB_STATE  = 'cases-state-v1';
 
+// Must match slider max in frontend (index.html slider max="52")
+const MAX_WEEKS = 52;
+
 // ─── IMPORT LOCAL LIB ─────────────────────────────────────────────────────────
 const {
   mapStageToStatus, hasDvContent,
@@ -84,11 +87,7 @@ async function main() {
   _zohoToken = await refreshZohoToken();
   console.log('[refresh] Zoho access token obtained');
 
-  // 2a. Cases + Clients + cached state — all in parallel
-  // NOTE: DV detection now uses the domestic_violence field on the client record
-  // (confirmed in client columns). The CRM notes query has been removed because
-  // "contains:DV" matches the substring in words like "individual/provide/advise"
-  // and was falsely flagging 99.9% of cases.
+  // 2a. Cases + Clients + cached state
   console.log('[refresh] Fetching cases, clients, cached state...');
   const [[caseRows, clientRows], casesState] = await Promise.all([
     Promise.all([fetchViewRows(VIEW_CASES), fetchViewRows(VIEW_CLIENTS)]),
@@ -103,15 +102,6 @@ async function main() {
   clientRows.length  = 0;
   console.log(`[refresh] ${rawCases.length} cases after date filter`);
 
-  // Diagnostic: log sample case and client name matching
-  if (rawCases.length > 0) {
-    const s = rawCases[0];
-    console.log(`[refresh] Sample raw case: client_name_key="${s._clientNameKey}" postcode="${s.postcode}" suburb="${s.suburb}" state="${s.state}" dv="${s.dv_flag}"`);
-  }
-  console.log(`[refresh] clientMap size: ${Object.keys(clientMap).length} entries`);
-  const sampleKeys = Object.keys(clientMap).slice(0, 3);
-  console.log(`[refresh] Sample clientMap keys: ${sampleKeys.join(' | ')}`);
-
   // 2b. Donations + Distributions in parallel
   console.log('[refresh] Fetching donations + distributions...');
   const [donCsv, disCsv] = await Promise.all([
@@ -122,7 +112,7 @@ async function main() {
   const distributions = aggregateDistributionsFromCsv(disCsv, caseToClient, clientMap);
   console.log(`[refresh] ${Object.keys(donations).length} donation postcodes, ${Object.keys(distributions).length} distribution postcodes`);
 
-  // 3. Process cases — pass empty Set for dvNoteIds (DV now from client record)
+  // 3. Process cases
   console.log('[refresh] Processing cases...');
   const { postcodes, updatedState, stats } = await processCases(rawCases, new Set(), casesState);
   console.log(`[refresh] ${postcodes.length} postcodes | new: ${stats.newSummaries} | reused: ${stats.reused} | DV removed: ${stats.dvFiltered} | no location: ${stats.noLocation}`);
@@ -202,8 +192,6 @@ async function fetchViewCsv(viewId) {
 }
 
 // ─── CLIENT + CASE MAPS ───────────────────────────────────────────────────────
-// Build lookup: client full_name → { postcode, suburb, state, dv }
-// DV flag comes from domestic_violence field on the client record (confirmed in columns).
 function buildClientMap(clientRows) {
   const map = {};
   for (const r of clientRows) {
@@ -211,23 +199,18 @@ function buildClientMap(clientRows) {
                  ((r.first_name || '') + ' ' + (r.last_name || '')).trim() ||
                  r.name || null;
     if (!name) continue;
-
     const postcode = r.mailing_zip   || r.zip_code   || r.postal_code ||
                      r.postcode      || r.post_code  || '';
     const suburb   = r.mailing_city  || r.city       || r.suburb      || '';
     const state    = r.mailing_state || r.state      || '';
-    // domestic_violence field confirmed in client columns
     const dv       = r.domestic_violence || 'false';
-
-    const entry = { postcode, suburb, state, dv };
-    map[name]  = entry;
-    // Also key by ID as fallback
+    const entry    = { postcode, suburb, state, dv };
+    map[name] = entry;
     if (r.id) map[r.id] = entry;
   }
   return map;
 }
 
-// Map case ID → client display name
 function buildCaseToClientMap(caseRows) {
   const map = {};
   for (const r of caseRows) {
@@ -236,7 +219,6 @@ function buildCaseToClientMap(caseRows) {
   return map;
 }
 
-// Filter cases by date and attach client location + DV flag
 function buildRawCases(caseRows, clientMap) {
   const CUTOFF = new Date('2025-01-01').getTime();
   return caseRows.filter(r => {
@@ -246,21 +228,42 @@ function buildRawCases(caseRows, clientMap) {
     return !isNaN(d) && d.getTime() >= CUTOFF;
   }).map(r => {
     const client = clientMap[r.client_name] || clientMap[r.contact_name] || {};
-
     return {
-      id:              r.id,
-      stage:           r.stage || r.case_stage || '',
-      description:     r.description || '',
-      // DV: use client's domestic_violence field — more reliable than CRM notes query
-      dv_flag:         client.dv || r.dv_flag || 'false',
-      postcode:        r.postcode    || r.post_code   || r.mailing_zip  || client.postcode || '',
-      suburb:          r.suburb      || r.mailing_city                  || client.suburb   || '',
-      state:           r.state       || r.mailing_state                 || client.state    || '',
-      created_date:    r.created_time || r.created_date || '',
-      // Store key used for lookup — helps diagnose mismatches in logs
-      _clientNameKey:  r.client_name || r.contact_name || '',
+      id:           r.id,
+      stage:        r.stage || r.case_stage || '',
+      description:  r.description || '',
+      dv_flag:      client.dv || r.dv_flag || 'false',
+      postcode:     r.postcode    || r.post_code   || r.mailing_zip  || client.postcode || '',
+      suburb:       r.suburb      || r.mailing_city                  || client.suburb   || '',
+      state:        r.state       || r.mailing_state                 || client.state    || '',
+      created_date: r.created_time || r.created_date || '',
     };
   });
+}
+
+// ─── WEEKLY BUCKETS ───────────────────────────────────────────────────────────
+// Pre-compute wc[] (weekly counts) and wt[] (weekly totals) arrays.
+// The frontend uses d.wc[weeks-1] and d.wt[weeks-1] for marker sizing.
+// wc[i] = number of items in last (i+1) weeks from NOW (blob generation time).
+// wt[i] = total amount in last (i+1) weeks from NOW.
+// This avoids the frontend having to filter items[] on every slider move.
+function computeWeeklyBuckets(items, now) {
+  const msPerWeek = 7 * 24 * 60 * 60 * 1000;
+  const wc = new Array(MAX_WEEKS).fill(0);
+  const wt = new Array(MAX_WEEKS).fill(0);
+
+  for (const item of items) {
+    if (!item.dateMs) continue;
+    const ageMs = now - item.dateMs;
+    if (ageMs < 0) continue; // future-dated item, skip
+    const ageWeeks = Math.ceil(ageMs / msPerWeek); // which week slot does this fall in?
+    // This item contributes to all buckets from ageWeeks onwards (cumulative)
+    for (let w = ageWeeks; w <= MAX_WEEKS; w++) {
+      wc[w - 1]++;
+      wt[w - 1] = Math.round((wt[w - 1] + (item.amount || 0)) * 100) / 100;
+    }
+  }
+  return { wc, wt };
 }
 
 // ─── AGGREGATE: DONATIONS ─────────────────────────────────────────────────────
@@ -311,7 +314,17 @@ function aggregateDonationsFromCsv(csv) {
     out[pc].total = Math.round((out[pc].total + total) * 100) / 100;
     out[pc].items.push({ amount: Math.round(total * 100) / 100, dateMs: donDateMs });
   }
-  Object.values(out).forEach(e => e.items.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0)));
+
+  // Sort items newest-first, then compute weekly buckets for frontend
+  const now = Date.now();
+  Object.values(out).forEach(entry => {
+    entry.items.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0));
+    const { wc, wt } = computeWeeklyBuckets(entry.items, now);
+    entry.wc = wc;
+    entry.wt = wt;
+    // Keep only top 20 items for sidebar display (reduces blob size)
+    entry.items = entry.items.slice(0, 20);
+  });
   return out;
 }
 
@@ -370,7 +383,17 @@ function aggregateDistributionsFromCsv(csv, caseToClient, clientMap) {
     out[pc].total = Math.round((out[pc].total + amount) * 100) / 100;
     out[pc].items.push({ amount: Math.round(amount * 100) / 100, subject, dateMs: disDateMs });
   }
-  Object.values(out).forEach(e => e.items.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0)));
+
+  // Sort items newest-first, then compute weekly buckets for frontend
+  const now = Date.now();
+  Object.values(out).forEach(entry => {
+    entry.items.sort((a, b) => (b.dateMs || 0) - (a.dateMs || 0));
+    const { wc, wt } = computeWeeklyBuckets(entry.items, now);
+    entry.wc = wc;
+    entry.wt = wt;
+    // Keep only top 20 items for sidebar display
+    entry.items = entry.items.slice(0, 20);
+  });
   return out;
 }
 
@@ -390,8 +413,6 @@ async function processCases(rawCases, dvNoteIds, casesState) {
     const caseId      = row.id;
     const description = row.description;
 
-    // DV check: client domestic_violence field + description keyword scan
-    // (CRM notes query removed — was matching "DV" substring in common words)
     const isDv = row.dv_flag === 'true' || hasDvContent(description) || dvNoteIds.has(caseId);
     if (isDv) { stats.dvFiltered++; continue; }
 
